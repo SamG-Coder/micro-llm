@@ -119,7 +119,7 @@ Hour-end dump in, one packed GGUF out. Prune table baked into the file so the re
 - Embed and `lm_head` get remapped
 - Tokenizer IDs stay original
 
-Q4_K superblocks will not line up with arbitrary channels, so dequant, gather, then requant.
+Q4_K superblocks will not line up with arbitrary channels, so dequant, gather, then requant Q4_K. Default remnant stays Q4 (`micro_llm.serve_ok=true`). `--q4-k-to-f16` is host debug only — F16 of a 75% FFN is ~25GB and must not load on the 5080.
 
 ## v1 product shape
 

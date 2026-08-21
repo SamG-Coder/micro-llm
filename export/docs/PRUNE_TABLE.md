@@ -190,7 +190,10 @@ One packed file. The keep-mask lives in a KV block so remnant and map cannot dri
 
 Serve path reads new shapes plus that KV block. No full-GGUF-plus-mask.
 
-Q4_K: do **not** slice quantized blocks in place. Path is dequant ? gather ?
-requant. v1 implements gather/remap/metadata/alignment correctly on F16/F32
-and leaves `export.quant.requantize_q4_k` as the requant hook (`--q4-k-to-f16`
-emits F16 after dequant+gather).
+Q4_K: do **not** slice quantized blocks in place. Default path is dequant →
+gather → real Q4_K requant (`export.quant.requantize_q4_k`, llama.cpp
+`quantize_row_q4_K_ref`) → write Q4_K with `micro_llm.serve_ok=true`. The
+serve remnant stays Q4 so the 12GB / 0.61 estimator still holds.
+`--q4-k-to-f16` is host debug only (F16 after gather, `serve_ok=false`).
+C++ serve refuses unless `micro_llm.serve_ok` is present and true. F16 of a
+75% FFN is ~25GB — do not load that on the 5080.

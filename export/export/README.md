@@ -129,13 +129,17 @@ and `micro_llm.tensor_align = 256`).
 
 ## Q4_K
 
-Do not slice Q4_K superblocks in place. v1:
+Do not slice Q4_K superblocks in place. Default pack path is a Q4 remnant
+so the 12GB / 0.61 estimator still holds. F16 of a 75% FFN is ~25GB — do
+not load that on the 5080.
 
 - F16 / F32: gather and write, fully supported
 - Q4_K copy-through (attention, no slice): raw bytes copied
-- Q4_K FFN / vocab: `dequantize` ? gather ? `requantize_q4_k` hook
-- Hook raises `Q4KRequantNotImplemented`. `--q4-k-to-f16` is host debug only
-  (emit F16 after gather; `micro_llm.serve_ok=false`). No fake Q4_K requant.
+- Q4_K FFN / vocab: `dequantize` → gather → real `requantize_q4_k` (llama.cpp
+  `quantize_row_q4_K_ref` port) → write Q4_K, `micro_llm.serve_ok=true`
+- `--q4-k-to-f16` is host debug only (emit F16 after gather;
+  `micro_llm.serve_ok=false`). C++ serve refuses. Last dim of a Q4_K write
+  must be a multiple of 256 (ffn_down keep counts: 13056 is).
 
 ## Tests
 

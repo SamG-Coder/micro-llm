@@ -31,7 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m export.pack",
         description="Pack a Qwen hybrid GGUF to a remnant file using an MLPT dump or JSON keep-mask.",
     )
-    p.add_argument("--model", required=True, help="Full source GGUF (F16/F32; Q4_K gather needs --q4-k-to-f16)")
+    p.add_argument(
+        "--model",
+        required=True,
+        help="Full source GGUF. Q4_K FFN/vocab: dequant→gather→requant Q4_K (default). "
+        "--q4-k-to-f16 is host debug only.",
+    )
     p.add_argument(
         "--prune-table",
         required=True,
@@ -52,8 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--q4-k-to-f16",
         action="store_true",
-        help="Host debug only: dequant Q4_K -> gather -> write F16. Bakes micro_llm.serve_ok=false. "
-        "C++ serve refuses. Default is to error (requant hook unimplemented; no fake Q4_K write).",
+        help="Host debug only: dequant Q4_K -> gather -> write F16 (~25GB at 75%% FFN). "
+        "Bakes micro_llm.serve_ok=false. C++ serve refuses. Default requants to Q4_K.",
     )
     p.add_argument("--keep-vision", action="store_true", help="Keep vision tower (v1 default: omit)")
     p.add_argument("--keep-mtp", action="store_true", help="Keep MTP / nextn heads (v1 default: omit)")

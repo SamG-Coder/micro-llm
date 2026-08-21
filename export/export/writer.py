@@ -42,12 +42,14 @@ from export.names import (
 )
 from export.prune_table import PruneTable, encode_kv
 from export.quant import (
-    Q4KRequantNotImplemented,
+    Q4_K_TYPE_SIZE,
+    QK_K,
     from_f32,
     is_float_type,
     is_q4_k,
     to_f32,
 )
+from gguf.quants import quant_shape_to_byte_shape
 
 SKIP_SRC_KV = {
     "GGUF.version",
@@ -364,22 +366,42 @@ def _plan_one(
     out_shape = _gathered_shape(work, axis_size, len(gather_indices), name)
     out_qtype = qtype
     if is_q4_k(qtype):
-        if not q4_k_to_f16:
-            raise Q4KRequantNotImplemented(
-                f"{name}: Q4_K gather needs a real requant (no fake Q4_K write). "
-                "Pass --q4-k-to-f16 for host debug F16, which sets micro_llm.serve_ok=false."
-            )
-        out_qtype = GGMLQuantizationType.F16
+        if q4_k_to_f16:
+            out_qtype = GGMLQuantizationType.F16
+        else:
+            out_qtype = GGMLQuantizationType.Q4_K
     elif not is_float_type(qtype):
         raise TypeError(
             f"{name}: gather on {qtype.name} is not supported in v1 "
             f"(F16/F32 fully supported; Q4_K needs dequant->gather->requant)"
         )
 
-    np_dtype = _np_dtype_for_qtype(out_qtype)
     n_elem = 1
     for d in out_shape:
         n_elem *= int(d)
+
+    if out_qtype == GGMLQuantizationType.Q4_K:
+        if out_shape[-1] % QK_K != 0:
+            raise ValueError(
+                f"{name}: Q4_K requant needs last dim a multiple of {QK_K}, "
+                f"gathered shape {out_shape}. Keep-channel counts for ffn_down "
+                f"must be a multiple of 256, or pass --q4-k-to-f16 (host debug)."
+            )
+        info_shape = quant_shape_to_byte_shape(out_shape, GGMLQuantizationType.Q4_K)
+        nbytes = int(n_elem * Q4_K_TYPE_SIZE // QK_K)
+        return _OutPlan(
+            name=name,
+            gather_indices=gather_indices,
+            axis_size=axis_size,
+            src_qtype=qtype,
+            out_qtype=out_qtype,
+            info_shape=info_shape,
+            nbytes=nbytes,
+            np_dtype=np.dtype(np.uint8),
+            raw_dtype=GGMLQuantizationType.Q4_K,
+        )
+
+    np_dtype = _np_dtype_for_qtype(out_qtype)
     nbytes = int(n_elem * np_dtype.itemsize)
     return _OutPlan(
         name=name,
