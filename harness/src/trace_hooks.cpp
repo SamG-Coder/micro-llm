@@ -33,7 +33,33 @@ bool TraceHooks::on_ffn_activations(uint32_t layer, const float* gate, const flo
     // Per-token scratch only (17408 floats). Never [chunk x 17408].
     ffn_reduce_token(gate, up, abs_scratch_.data(), nullptr, n_channels,
                      table_.fire_eps);
-    return on_ffn_abs(layer, abs_scratch_.data(), n_channels);
+    const bool ok = on_ffn_abs(layer, abs_scratch_.data(), n_channels);
+    if (ok) {
+        table_.mark_layer_hooked(layer);
+    }
+    return ok;
+}
+
+bool TraceHooks::on_ffn_activations_device(uint32_t layer, const float* d_gate,
+                                           const float* d_up,
+                                           uint32_t n_channels) {
+    if (!d_gate || !d_up || layer >= kNLayers || n_channels == 0 ||
+        n_channels > kFfnIntermediate) {
+        return false;
+    }
+    if (!token_open_) {
+        begin_token(token_index_);
+    }
+    const int rc = ffn_reduce_token_cuda_device(d_gate, d_up, abs_scratch_.data(),
+                                                nullptr, n_channels, table_.fire_eps);
+    if (rc < 0) {
+        return false;
+    }
+    const bool ok = on_ffn_abs(layer, abs_scratch_.data(), n_channels);
+    if (ok) {
+        table_.mark_layer_hooked(layer);
+    }
+    return ok;
 }
 
 bool TraceHooks::on_ffn_abs(uint32_t layer, const float* abs_act, uint32_t n_channels) {
@@ -57,19 +83,20 @@ bool TraceHooks::on_ffn_abs(uint32_t layer, const float* abs_act, uint32_t n_cha
             bit_set(token_fired_.data(), channel_bit_index(layer, c));
         }
     }
+    table_.mark_layer_hooked(layer);
     return true;
 }
 
-bool TraceHooks::on_delta_residual(uint32_t pack_id, float residual_abs) {
+bool TraceHooks::on_delta_residual(uint32_t pack_id, float relative_r) {
     if (pack_id >= kNDeltaNetPacks) {
         return false;
     }
     PackStat& p = table_.pack(pack_id);
     p.pack = pack_id;
     p.layer = delta_layer_from_pack_id(pack_id);
-    const double r = static_cast<double>(residual_abs);
+    const double r = static_cast<double>(relative_r);
     p.sumsq_residual += r * r;
-    if (residual_abs > table_.spike_eps) {
+    if (relative_r > table_.spike_eps) {
         p.n_spike += 1;
     }
     return true;
@@ -85,12 +112,12 @@ bool TraceHooks::on_delta_hidden(uint32_t pack_id, const float* hidden_in,
         const double d = static_cast<double>(hidden_out[i]) - static_cast<double>(hidden_in[i]);
         sumsq += d * d;
     }
-    const float residual_abs = static_cast<float>(std::sqrt(sumsq));
+    const float r = relative_residual_l2(hidden_in, hidden_out, hidden_dim);
     PackStat& p = table_.pack(pack_id);
     p.pack = pack_id;
     p.layer = delta_layer_from_pack_id(pack_id);
     p.sumsq_residual += sumsq;
-    if (residual_abs > table_.spike_eps) {
+    if (r > table_.spike_eps) {
         p.n_spike += 1;
     }
     return true;

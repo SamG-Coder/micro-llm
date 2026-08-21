@@ -11,6 +11,11 @@ void test_serve_ok_refuses_unless_present_and_true(TestContext& ctx) {
     CHECK(ctx, !remnant_serve_allowed(true, false));   // --q4-k-to-f16 / not a Q4 remnant
     CHECK(ctx, !remnant_serve_allowed(false, true));   // key missing
     CHECK(ctx, !remnant_serve_allowed(false, false));
+    CHECK(ctx, remnant_may_serve(true, true));
+    CHECK(ctx, !remnant_may_serve(true, false));      // F16 host dump, refuse
+    CHECK(ctx, !remnant_may_serve(false, true));
+    CHECK(ctx, !remnant_may_serve(false, false));
+    CHECK(ctx, remnant_may_serve(true, true) == remnant_serve_allowed(true, true));
     CHECK(ctx, kKvServeOk[0] == 'm');
 }
 

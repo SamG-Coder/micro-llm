@@ -1,6 +1,6 @@
 // Optional CUDA kernel. Compiles only when MICRO_LLM_CUDA=ON and nvcc exists.
-// Per-token warp map over channels. No [chunk x 17408] allocation.
-// Do not dequant a whole FFN to FP16 ? gate/up are live activations.
+// Persistent context: scratch allocated once. Device-tap uses live d_gate/d_up
+// with no per-token cudaMalloc or H2D of activations.
 
 #include "micro_llm/ffn_reduce.hpp"
 
@@ -17,8 +17,6 @@ __global__ void ffn_reduce_token_kernel(const float* gate, const float* up,
                                         float* abs_out, uint8_t* fired_bits,
                                         uint32_t n_channels, float eps,
                                         unsigned int* n_fired) {
-    // One thread per channel. A warp covers 32 consecutive channels, then
-    // the caller evicts. No chunk dimension.
     const uint32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_channels) {
         return;
@@ -35,7 +33,129 @@ __global__ void ffn_reduce_token_kernel(const float* gate, const float* up,
     }
 }
 
+void cuda_free_ptr(void*& p) {
+    if (p) {
+        cudaFree(p);
+        p = nullptr;
+    }
+}
+
 }  // namespace
+
+CudaReduceContext::~CudaReduceContext() { release(); }
+
+bool CudaReduceContext::ensure(uint32_t n_channels) {
+    if (n_channels == 0) {
+        return false;
+    }
+    if (cap_ >= n_channels && d_abs_ && d_nf_) {
+        return true;
+    }
+    release();
+    const size_t fbytes = sizeof(float) * n_channels;
+    const size_t bbytes = (static_cast<size_t>(n_channels) + 7u) / 8u;
+    float* abs = nullptr;
+    uint8_t* bits = nullptr;
+    unsigned int* nf = nullptr;
+    float* gscratch = nullptr;
+    float* uscratch = nullptr;
+    if (cudaMalloc(&abs, fbytes) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMalloc(&bits, bbytes) != cudaSuccess) {
+        cudaFree(abs);
+        return false;
+    }
+    if (cudaMalloc(&nf, sizeof(unsigned int)) != cudaSuccess) {
+        cudaFree(abs);
+        cudaFree(bits);
+        return false;
+    }
+    if (cudaMalloc(&gscratch, fbytes) != cudaSuccess) {
+        cudaFree(abs);
+        cudaFree(bits);
+        cudaFree(nf);
+        return false;
+    }
+    if (cudaMalloc(&uscratch, fbytes) != cudaSuccess) {
+        cudaFree(abs);
+        cudaFree(bits);
+        cudaFree(nf);
+        cudaFree(gscratch);
+        return false;
+    }
+    d_abs_ = abs;
+    d_bits_ = bits;
+    d_nf_ = nf;
+    d_gate_scratch_ = gscratch;
+    d_up_scratch_ = uscratch;
+    cap_ = n_channels;
+    return true;
+}
+
+void CudaReduceContext::release() {
+    cuda_free_ptr(d_abs_);
+    cuda_free_ptr(d_bits_);
+    cuda_free_ptr(d_nf_);
+    cuda_free_ptr(d_gate_scratch_);
+    cuda_free_ptr(d_up_scratch_);
+    cap_ = 0;
+}
+
+int CudaReduceContext::reduce_device(const float* d_gate, const float* d_up,
+                                     float* abs_out, uint8_t* fired_bits,
+                                     uint32_t n_channels, float eps) {
+    if (!d_gate || !d_up || !abs_out || n_channels == 0) {
+        return -1;
+    }
+    if (!ensure(n_channels)) {
+        return -1;
+    }
+    const size_t fbytes = sizeof(float) * n_channels;
+    const size_t bbytes = (static_cast<size_t>(n_channels) + 7u) / 8u;
+    cudaMemset(d_nf_, 0, sizeof(unsigned int));
+    if (fired_bits) {
+        cudaMemset(d_bits_, 0, bbytes);
+    }
+    const int threads = 128;
+    const int blocks = static_cast<int>((n_channels + threads - 1u) / threads);
+    ffn_reduce_token_kernel<<<blocks, threads>>>(
+        d_gate, d_up, static_cast<float*>(d_abs_),
+        fired_bits ? static_cast<uint8_t*>(d_bits_) : nullptr, n_channels, eps,
+        static_cast<unsigned int*>(d_nf_));
+    if (cudaDeviceSynchronize() != cudaSuccess) {
+        return -1;
+    }
+    cudaMemcpy(abs_out, d_abs_, fbytes, cudaMemcpyDeviceToHost);
+    unsigned int nf = 0;
+    cudaMemcpy(&nf, d_nf_, sizeof(nf), cudaMemcpyDeviceToHost);
+    if (fired_bits) {
+        cudaMemcpy(fired_bits, d_bits_, bbytes, cudaMemcpyDeviceToHost);
+    }
+    return static_cast<int>(nf);
+}
+
+int CudaReduceContext::reduce_host(const float* gate, const float* up, float* abs_out,
+                                   uint8_t* fired_bits, uint32_t n_channels,
+                                   float eps) {
+    if (!gate || !up || !abs_out || n_channels == 0) {
+        return -1;
+    }
+    if (!ensure(n_channels)) {
+        return -1;
+    }
+    const size_t fbytes = sizeof(float) * n_channels;
+    cudaMemcpy(d_gate_scratch_, gate, fbytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_up_scratch_, up, fbytes, cudaMemcpyHostToDevice);
+    return reduce_device(static_cast<const float*>(d_gate_scratch_),
+                         static_cast<const float*>(d_up_scratch_), abs_out,
+                         fired_bits, n_channels, eps);
+}
+
+CudaReduceContext& persistent_cuda_reduce() {
+    static CudaReduceContext ctx;
+    return ctx;
+}
 
 bool ffn_reduce_cuda_available() {
     int n = 0;
@@ -48,58 +168,21 @@ ReduceBackend ffn_reduce_backend() {
 
 int ffn_reduce_token_cuda(const float* gate, const float* up, float* abs_out,
                           uint8_t* fired_bits, uint32_t n_channels, float eps) {
-    if (!gate || !up || !abs_out || n_channels == 0) {
+    if (!ffn_reduce_cuda_available()) {
         return -1;
     }
+    return persistent_cuda_reduce().reduce_host(gate, up, abs_out, fired_bits,
+                                                n_channels, eps);
+}
 
-    float* d_gate = nullptr;
-    float* d_up = nullptr;
-    float* d_abs = nullptr;
-    uint8_t* d_bits = nullptr;
-    unsigned int* d_nf = nullptr;
-    const size_t fbytes = sizeof(float) * n_channels;
-    const size_t bbytes = (static_cast<size_t>(n_channels) + 7u) / 8u;
-
-    auto fail = [&]() {
-        cudaFree(d_gate);
-        cudaFree(d_up);
-        cudaFree(d_abs);
-        cudaFree(d_bits);
-        cudaFree(d_nf);
+int ffn_reduce_token_cuda_device(const float* d_gate, const float* d_up,
+                                 float* abs_out, uint8_t* fired_bits,
+                                 uint32_t n_channels, float eps) {
+    if (!ffn_reduce_cuda_available()) {
         return -1;
-    };
-
-    if (cudaMalloc(&d_gate, fbytes) != cudaSuccess) return fail();
-    if (cudaMalloc(&d_up, fbytes) != cudaSuccess) return fail();
-    if (cudaMalloc(&d_abs, fbytes) != cudaSuccess) return fail();
-    if (cudaMalloc(&d_nf, sizeof(unsigned int)) != cudaSuccess) return fail();
-    if (fired_bits) {
-        if (cudaMalloc(&d_bits, bbytes) != cudaSuccess) return fail();
-        cudaMemset(d_bits, 0, bbytes);
     }
-    cudaMemset(d_nf, 0, sizeof(unsigned int));
-    cudaMemcpy(d_gate, gate, fbytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_up, up, fbytes, cudaMemcpyHostToDevice);
-
-    const int threads = 128;  // 4 warps; each warp maps 32 channels
-    const int blocks = static_cast<int>((n_channels + threads - 1u) / threads);
-    ffn_reduce_token_kernel<<<blocks, threads>>>(d_gate, d_up, d_abs, d_bits,
-                                                 n_channels, eps, d_nf);
-    if (cudaDeviceSynchronize() != cudaSuccess) return fail();
-
-    cudaMemcpy(abs_out, d_abs, fbytes, cudaMemcpyDeviceToHost);
-    unsigned int nf = 0;
-    cudaMemcpy(&nf, d_nf, sizeof(nf), cudaMemcpyDeviceToHost);
-    if (fired_bits && d_bits) {
-        cudaMemcpy(fired_bits, d_bits, bbytes, cudaMemcpyDeviceToHost);
-    }
-
-    cudaFree(d_gate);
-    cudaFree(d_up);
-    cudaFree(d_abs);
-    cudaFree(d_bits);
-    cudaFree(d_nf);
-    return static_cast<int>(nf);
+    return persistent_cuda_reduce().reduce_device(d_gate, d_up, abs_out, fired_bits,
+                                                  n_channels, eps);
 }
 
 }  // namespace micro_llm

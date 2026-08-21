@@ -7,3 +7,7 @@
 #include "micro_llm/ffn_reduce.hpp"
 #include "micro_llm/trace_hooks.hpp"
 #include "micro_llm/streamer.hpp"
+#include "micro_llm/gguf_meta.hpp"
+#include "micro_llm/serve.hpp"
+#include "micro_llm/graph_hooks.hpp"
+#include "micro_llm/live_forward.hpp"

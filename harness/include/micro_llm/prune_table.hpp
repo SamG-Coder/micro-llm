@@ -27,7 +27,7 @@ struct PruneTableFileHeader {
     float fire_eps;
     float spike_eps;
     uint64_t n_tokens;
-    uint32_t flags;          // bit0 = floor bitset present
+    uint32_t flags;          // bit0 = floor present; bit1 = layer_hooked trailer after vocab
     uint32_t reserved[7];
 };
 
@@ -35,6 +35,10 @@ static_assert(sizeof(PruneTableFileHeader) == PruneTableFileHeader::kSize,
               "PruneTableFileHeader must be 80 bytes");
 
 inline constexpr uint32_t kPruneTableFlagHasFloor = 1u << 0;
+// bit1: u64 layer_hooked trailer is present after the vocab bitset.
+// Header stays 80 bytes. Trailer is not in the header.
+inline constexpr uint32_t kPruneTableFlagLayerHooked = 1u << 1;
+inline constexpr size_t kLayerHookedTrailerBytes = 8;
 
 class PruneTable {
 public:
@@ -68,6 +72,16 @@ public:
 
     bool pack_is_dead(uint32_t pack_id) const;
 
+    void mark_layer_hooked(uint32_t layer);
+    bool layer_was_hooked(uint32_t layer) const;
+    // Unwired = tokens ran but this layer's FFN hook never fired. Do not fake n_fired.
+    bool layer_is_unwired(uint32_t layer) const;
+    // Dead = hooked AND every channel n_fired == 0. Distinct from unwired.
+    bool layer_is_dead(uint32_t layer) const;
+
+    uint64_t layer_hooked() const { return layer_hooked_; }
+    void set_layer_hooked_bits(uint64_t bits) { layer_hooked_ = bits; }
+
     float fire_eps = kDefaultFireEps;
     float spike_eps = kDefaultSpikeEps;
     uint64_t n_tokens = 0;
@@ -81,6 +95,7 @@ private:
     std::vector<PackStat> packs_;
     std::vector<uint8_t> floor_;
     std::vector<uint8_t> vocab_;
+    uint64_t layer_hooked_ = 0;
 };
 
 bool save_prune_table(const PruneTable& table, const std::string& path,

@@ -3,6 +3,7 @@
 // Qwen 27B (3.6 / 3.8) constants for the v1 trace streamer.
 // Packed remnant tensors later need 256-byte alignment or 5080 kernels stall.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -27,10 +28,13 @@ inline constexpr uint32_t kVocabBitsetBytes = (kVocabSize + 7u) / 8u;
 inline constexpr uint32_t kPruneTableVersion = 1;
 inline constexpr char kPruneTableMagic[4] = {'M', 'L', 'P', 'T'};
 inline constexpr float kDefaultFireEps = 1.0e-6f;
-inline constexpr float kDefaultSpikeEps = 1.0e-6f;
+// Relative pack score: r = ||out-in||_2 / (||in||_2 + kRelResidualDenom).
+// Identity (out==in) must not spike. Absolute L2-vs-1e-6 was a false-spike trap.
+inline constexpr float kDefaultSpikeEps = 0.02f;
+inline constexpr float kRelResidualDenom = 1.0e-12f;
 
 // Remnant GGUF KV. C++ serve refuses unless this key is present and true.
-// Export sets it false for --q4-k-to-f16 (host debug only). True on a real Q4 remnant.
+// Export sets it false for --q4-k-to-f16 (host debug / F16 dump). True on a real Q4 remnant.
 inline constexpr const char kKvServeOk[] = "micro_llm.serve_ok";
 inline constexpr const char kKvCudaScratchBytes[] = "micro_llm.cuda_scratch_bytes";
 inline constexpr const char kKvPerTokenFp16[] = "micro_llm.kv_bytes_per_token_fp16";
@@ -73,6 +77,27 @@ inline constexpr bool remnant_serve_allowed(
         return false;
     }
     return kv <= (after_w - cuda_scratch);
+}
+
+// Preferred name. True only if the KV is present AND true. False = F16 host dump, refuse.
+inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok) {
+    return remnant_serve_allowed(key_present, serve_ok);
+}
+
+// r = ||out-in||_2 / (||in||_2 + 1e-12). Identity => 0.
+inline float relative_residual_l2(const float* hidden_in, const float* hidden_out,
+                                  uint32_t hidden_dim) {
+    double sumsq_d = 0.0;
+    double sumsq_in = 0.0;
+    for (uint32_t i = 0; i < hidden_dim; ++i) {
+        const double in = static_cast<double>(hidden_in[i]);
+        const double d = static_cast<double>(hidden_out[i]) - in;
+        sumsq_d += d * d;
+        sumsq_in += in * in;
+    }
+    const double num = std::sqrt(sumsq_d);
+    const double den = std::sqrt(sumsq_in) + static_cast<double>(kRelResidualDenom);
+    return static_cast<float>(num / den);
 }
 
 // Channel is ONE index across gate, up, and down. Export gathers that same

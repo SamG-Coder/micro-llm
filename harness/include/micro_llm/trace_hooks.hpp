@@ -34,15 +34,23 @@ public:
     bool on_ffn_activations(uint32_t layer, const float* gate, const float* up,
                             uint32_t n_channels = kFfnIntermediate);
 
+    // Live device pointers. Persistent CUDA context; no per-token
+    // cudaMalloc/H2D of gate/up. Marks the layer hooked. Returns false
+    // if CUDA is not built or the pointers are unusable.
+    bool on_ffn_activations_device(uint32_t layer, const float* d_gate,
+                                   const float* d_up,
+                                   uint32_t n_channels = kFfnIntermediate);
+
     // Already-reduced |SiLU(gate)*up| for one token (no [chunk x C] scratch).
     bool on_ffn_abs(uint32_t layer, const float* abs_act,
                     uint32_t n_channels = kFfnIntermediate);
 
-    // DeltaNet pack residual. pack_id is GLOBAL 0..47.
-    bool on_delta_residual(uint32_t pack_id, float residual_abs);
+    // DeltaNet pack score already computed as relative r
+    // (||out-in||_2 / (||in||_2 + 1e-12)). pack_id is GLOBAL 0..47.
+    bool on_delta_residual(uint32_t pack_id, float relative_r);
 
-    // Vector form: residual is |hidden_out - hidden_in| (L2), sumsq is
-    // sum_i (out[i]-in[i])^2.
+    // Vector form. Spike when r = ||out-in||_2 / (||in||_2 + 1e-12) > spike_eps.
+    // Identity (out==in) must not spike. sumsq_residual accumulates ||out-in||^2.
     bool on_delta_hidden(uint32_t pack_id, const float* hidden_in,
                          const float* hidden_out, uint32_t hidden_dim);
 

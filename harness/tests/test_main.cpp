@@ -14,6 +14,12 @@ int main() {
         {"dead_vs_spike_pack", test_dead_vs_spike_pack},
         {"serve_ok_refuses_unless_present_and_true", test_serve_ok_refuses_unless_present_and_true},
         {"serve_stack_gate", test_serve_stack_gate},
+        {"layer_hooked_trailer", test_layer_hooked_trailer},
+        {"relative_spike_identity", test_relative_spike_identity},
+        {"device_tap_api", test_device_tap_api},
+        {"live_forward_backends", test_live_forward_backends},
+        {"graph_hook_names", test_graph_hook_names},
+        {"gguf_serve_gate", test_gguf_serve_gate},
     };
 
     int failed = 0;

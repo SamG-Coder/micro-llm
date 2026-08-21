@@ -11,6 +11,10 @@ void test_serialize_roundtrip(TestContext& ctx) {
     a.fire_eps = 2.5e-5f;
     a.spike_eps = 3.5e-5f;
     a.n_tokens = 123;
+    a.flags |= kPruneTableFlagLayerHooked;
+    a.mark_layer_hooked(0);
+    a.mark_layer_hooked(16);
+    a.mark_layer_hooked(63);
     a.channel(0, 0).n_fired = 9;
     a.channel(0, 0).sumsq = 4.25f;
     a.channel(0, 0).maxabs = 1.5f;
@@ -59,5 +63,10 @@ void test_serialize_roundtrip(TestContext& ctx) {
     CHECK(ctx, !b.vocab_seen(18));
     CHECK(ctx, b.n_tokens == 123);
     CHECK(ctx, b.flags & kPruneTableFlagHasFloor);
+    CHECK(ctx, b.flags & kPruneTableFlagLayerHooked);
+    CHECK(ctx, b.layer_was_hooked(0));
+    CHECK(ctx, b.layer_was_hooked(16));
+    CHECK(ctx, b.layer_was_hooked(63));
+    CHECK(ctx, !b.layer_was_hooked(1));
     std::remove(path.c_str());
 }

@@ -1,0 +1,61 @@
+#include "test_common.hpp"
+
+#include "micro_llm/micro_llm.hpp"
+
+#include <cstdio>
+#include <fstream>
+#include <string>
+#include <vector>
+
+void test_layer_hooked_trailer(TestContext& ctx) {
+    using namespace micro_llm;
+
+    CHECK(ctx, kPruneTableFlagLayerHooked == (1u << 1));
+
+    TraceHooks hooks;
+    std::vector<float> abs_act(kFfnIntermediate, 0.f);
+    abs_act[0] = 1.0f;
+
+    hooks.begin_token(0);
+    CHECK(ctx, hooks.on_ffn_abs(3, abs_act.data()));
+    hooks.after_logits(0, false);
+
+    CHECK(ctx, hooks.table().n_tokens == 1);
+    CHECK(ctx, hooks.table().layer_was_hooked(3));
+    CHECK(ctx, !hooks.table().layer_is_unwired(3));
+    CHECK(ctx, !hooks.table().layer_is_dead(3));
+
+    // Tokens ran, other layers never tapped — unwired, not dead. Do not fake n_fired.
+    CHECK(ctx, hooks.table().layer_is_unwired(0));
+    CHECK(ctx, !hooks.table().layer_was_hooked(0));
+    CHECK(ctx, hooks.table().channel(0, 0).n_fired == 0);
+    CHECK(ctx, !hooks.table().layer_is_dead(0));
+
+    // Hooked + all n_fired==0 => dead.
+    hooks.begin_token(1);
+    std::vector<float> zeros(kFfnIntermediate, 0.f);
+    CHECK(ctx, hooks.on_ffn_abs(7, zeros.data()));
+    hooks.after_logits(1, false);
+    CHECK(ctx, hooks.table().layer_was_hooked(7));
+    CHECK(ctx, hooks.table().layer_is_dead(7));
+    CHECK(ctx, !hooks.table().layer_is_unwired(7));
+
+    const std::string path = "test_layer_hooked.bin";
+    std::string err;
+    CHECK(ctx, save_prune_table(hooks.table(), path, &err));
+
+    std::ifstream is(path, std::ios::binary | std::ios::ate);
+    const auto sz = static_cast<size_t>(is.tellg());
+    is.close();
+    const size_t base = 80ull + 64ull * 17408ull * 16ull + 48ull * 24ull + 139264ull + 31040ull;
+    CHECK(ctx, base == 17997328ull);
+    CHECK(ctx, sz == base + 8);
+
+    PruneTable loaded;
+    CHECK(ctx, load_prune_table(loaded, path, &err));
+    CHECK(ctx, loaded.flags & kPruneTableFlagLayerHooked);
+    CHECK(ctx, loaded.layer_was_hooked(3));
+    CHECK(ctx, loaded.layer_is_unwired(0));
+    CHECK(ctx, loaded.layer_is_dead(7));
+    std::remove(path.c_str());
+}
