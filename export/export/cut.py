@@ -23,7 +23,7 @@ bits, keep ALL n_ffn channels (17408 on 27B). Never emit kept=[0]. The
 hooks did not run; "everything dead" is not evidence.
 
 Weak cap: at most 25% of the layer width (keep >= 13056 of 17408).
-recover=True allows 40% (keep >= 10445). Never hollow a layer to 1
+recover=True allows 40% (keep >= 10496). Never hollow a layer to 1
 channel. If the remnant is still over the ceiling after the max weak cut,
 raise CutCeilingError.
 
@@ -68,7 +68,7 @@ DEFAULT_CEILING_GB = 12.0
 WEAK_CUT_FRAC = 0.25
 WEAK_CUT_FRAC_RECOVER = 0.40
 WEAK_KEEP_MIN_27B = 13_056          # ceil(17408 * 0.75)
-WEAK_KEEP_MIN_RECOVER_27B = 10_445  # ceil(17408 * 0.60)
+WEAK_KEEP_MIN_RECOVER_27B = 10_496  # 41*256; Q4_K superblocks line up
 
 
 class CutCeilingError(RuntimeError):

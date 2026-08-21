@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--recover",
         action="store_true",
-        help="Allow a 40%% weak FFN cut (keep >= 10445 of 17408). Default is 25%% (keep >= 13056).",
+        help="Allow a 40%% weak FFN cut (keep >= 10496 of 17408). Default is 25%% (keep >= 13056).",
     )
     p.add_argument(
         "--q4-k-to-f16",

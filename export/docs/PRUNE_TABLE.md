@@ -148,7 +148,7 @@ vocab_remap          = old_id -> dense remnant row
 Cut dead FFN first (`n_fired == 0` AND not floor), then dead DeltaNet packs
 (`n_spike == 0`), then unused vocab (bitset 0), then weak FFN (lowest energy
 among survivors) only if still over the ceiling. Weak cap is 25% (keep >=
-13056 of 17408); `--recover` allows 40% (keep >= 10445). Raise
+13056 of 17408); `--recover` allows 40% (keep >= 10496). Raise
 `CutCeilingError` if still over. Never hollow a layer to 1 channel. If a
 layer's total `n_fired` is 0 and it has no floor bits, keep all 17408
 (missing hook — never `kept=[0]`). bytes/param is `17.1/28 ≈ 0.61`, or

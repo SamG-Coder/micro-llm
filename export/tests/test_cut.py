@@ -174,7 +174,7 @@ def test_weak_cap_25_then_ceiling_error():
 
 def test_recover_allows_40_percent_then_ceiling_error():
     dump = _all_live_dump()
-    assert weak_keep_min(N_FFN, recover=True) == WEAK_KEEP_MIN_RECOVER_27B == 10445
+    assert weak_keep_min(N_FFN, recover=True) == WEAK_KEEP_MIN_RECOVER_27B == 10496
     with pytest.raises(CutCeilingError) as ei:
         cut_mlpt(dump, ceiling_gb=0.0, recover=True)
     table = ei.value.table

@@ -14,7 +14,7 @@ python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gg
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--ceiling-gb` | `12` | remnant *weight* ceiling in GiB (use `10` for 32k+vision) |
-| `--recover` | off | allow a 40% weak FFN cut (keep >= 10445). Default 25% (keep >= 13056) |
+| `--recover` | off | allow a 40% weak FFN cut (keep >= 10496). Default 25% (keep >= 13056) |
 | `--keep-vision` | off | v1 omits the vision tower unless set |
 | `--keep-mtp` | off | v1 omits MTP / nextn heads unless set |
 | `--q4-k-to-f16` | off | host debug only: after Q4_K dequant+gather, emit F16 (no fake requant). Bakes `micro_llm.serve_ok=false` |
@@ -52,7 +52,7 @@ Cut order: dead FFN (`n_fired == 0` AND not floor) → dead DeltaNet packs
 bytes/param = `17.1/28 ≈ 0.61`, or `source_file_size / n_params` when `--model`
 is given.
 
-Weak cap 25% (keep >= 13056 of 17408). `--recover` allows 40% (10445). Raise
+Weak cap 25% (keep >= 13056 of 17408). `--recover` allows 40% (10496). Raise
 `CutCeilingError` if still over. Never hollow to 1 channel.
 
 If a layer's total `n_fired` is 0 and it has no floor bits: keep ALL 17408

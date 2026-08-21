@@ -61,7 +61,7 @@ While the layer is still on chip, keep three running numbers per channel:
 - sum of squares
 - max abs
 
-**Fired** means `|SiLU(gate) * up|` above eps. Dead = never fired. Weak = bottom energy. Cut dead FFN, then dead packs, then unused vocab, then weak FFN until the remnant ceiling. Weak cap is 25% (keep >= 13056 of 17408); recover allows 40% (keep >= 10445). A layer with total `n_fired == 0` and no floor bits is a missing hook: keep all 17408.
+**Fired** means `|SiLU(gate) * up|` above eps. Dead = never fired. Weak = bottom energy. Cut dead FFN, then dead packs, then unused vocab, then weak FFN until the remnant ceiling. Weak cap is 25% (keep >= 13056 of 17408); recover allows 40% (keep >= 10496). A layer with total `n_fired == 0` and no floor bits is a missing hook: keep all 17408.
 
 Floor: a channel that fired even once on a special or high-loss token stays. An hour can miss a rare-but-critical path.
 
