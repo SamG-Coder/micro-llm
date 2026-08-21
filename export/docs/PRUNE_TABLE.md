@@ -145,10 +145,16 @@ vocab_remap          = old_id -> dense remnant row
 
 `keep_packs` is the global id space. Layer for pack `p` is `4 * (p // 3) + (p % 3)`.
 
-Cut dead FFN first (`n_fired == 0` AND not floor), then weak (lowest energy
-among survivors), then dead DeltaNet packs (`n_spike == 0`), then unused vocab
-(bitset 0). Never drop first two or last two layers as layers (FFN still
-width-cuts). Never drop the 16 Gated Attention blocks.
+Cut dead FFN first (`n_fired == 0` AND not floor), then dead DeltaNet packs
+(`n_spike == 0`), then unused vocab (bitset 0), then weak FFN (lowest energy
+among survivors) only if still over the ceiling. Weak cap is 25% (keep >=
+13056 of 17408); `--recover` allows 40% (keep >= 10496). Raise
+`CutCeilingError` if still over. Never hollow a layer to 1 channel. If a
+layer's total `n_fired` is 0 and it has no floor bits, keep all 17408
+(missing hook — never `kept=[0]`). bytes/param is `17.1/28 ≈ 0.61`, or
+`source_file_size / n_params` when `--model` is given. Never drop first two
+or last two layers as layers (FFN still width-cuts). Never drop the 16
+Gated Attention blocks.
 
 ### Ranking rule (weak channels)
 
@@ -173,6 +179,12 @@ One packed file. The keep-mask lives in a KV block so remnant and map cannot dri
 | `micro_llm.vocab_remap.rows` | i32[] | dense remnant rows (0..N-1) |
 | `micro_llm.keep_vision` | bool | v1 default false |
 | `micro_llm.keep_mtp` | bool | v1 default false |
+| `micro_llm.serve_ok` | bool | `false` on `--q4-k-to-f16` (host debug); `true` on a real Q4 remnant. C++ serve refuses unless present and true. |
+| `micro_llm.cuda_scratch_bytes` | u64 | `0.9` GiB as integer bytes |
+| `micro_llm.kv_bytes_per_token_fp16` | u64 | `65536` |
+| `micro_llm.kv_bytes_per_token_fp8` | u64 | `32768` |
+| `micro_llm.serve_usable_bytes` | u64 | `15.2` GiB headless, integer bytes |
+| `micro_llm.weight_bytes` | u64 | written first as `cut.estimate_weight_bytes` (KV is before tensors); patched after stream-write to on-disk file size. Serve prefers file size over this estimate. |
 
 - Attention / Gated Attention (QKVO + 4 KV heads) copy through
 - FFN packed to `keep_channels` (same index, gate / up / down)
@@ -183,7 +195,10 @@ One packed file. The keep-mask lives in a KV block so remnant and map cannot dri
 
 Serve path reads new shapes plus that KV block. No full-GGUF-plus-mask.
 
-Q4_K: do **not** slice quantized blocks in place. Path is dequant ? gather ?
-requant. v1 implements gather/remap/metadata/alignment correctly on F16/F32
-and leaves `export.quant.requantize_q4_k` as the requant hook (`--q4-k-to-f16`
-emits F16 after dequant+gather).
+Q4_K: do **not** slice quantized blocks in place. Default path is dequant →
+gather → real Q4_K requant (`export.quant.requantize_q4_k`, llama.cpp
+`quantize_row_q4_K_ref`) → write Q4_K with `micro_llm.serve_ok=true`. The
+serve remnant stays Q4 so the 12GB / 0.61 estimator still holds.
+`--q4-k-to-f16` is host debug only (F16 after gather, `serve_ok=false`).
+C++ serve refuses unless `micro_llm.serve_ok` is present and true. F16 of a
+75% FFN is ~25GB — do not load that on the 5080.

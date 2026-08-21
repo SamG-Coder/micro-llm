@@ -61,7 +61,7 @@ While the layer is still on chip, keep three running numbers per channel:
 - sum of squares
 - max abs
 
-**Fired** means `|SiLU(gate) * up|` above eps. Dead = never fired. Weak = bottom energy. Cut dead first, then weak, until the remnant ceiling.
+**Fired** means `|SiLU(gate) * up|` above eps. Dead = never fired. Weak = bottom energy. Cut dead FFN, then dead packs, then unused vocab, then weak FFN until the remnant ceiling. Weak cap is 25% (keep >= 13056 of 17408); recover allows 40% (keep >= 10496). A layer with total `n_fired == 0` and no floor bits is a missing hook: keep all 17408.
 
 Floor: a channel that fired even once on a special or high-loss token stays. An hour can miss a rare-but-critical path.
 
@@ -107,6 +107,8 @@ Packed remnant only. Surviving tensors, densely laid out, 256-byte aligned. No o
 
 12GB is the weight budget. CUDA plus KV still sit on top. Prefer FP8 KV on Blackwell before cutting more FFN.
 
+The 15.2GB RTX 5080 gate is the serve stack, not a second cut ceiling: remnant file bytes + 0.9GB CUDA/decode scratch + KV(ctx) (64KB/token FP16, 32KB/token FP8) must fit in 15.2GB headless or 14.5GB with a display. Serve prefers the on-disk remnant size over the baked `micro_llm.weight_bytes` estimate. A coding remnant must not include vision (`keep_vision` fails the gate), and serve still refuses unless `micro_llm.serve_ok` is present and true.
+
 Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
 ## Export
@@ -119,7 +121,7 @@ Hour-end dump in, one packed GGUF out. Prune table baked into the file so the re
 - Embed and `lm_head` get remapped
 - Tokenizer IDs stay original
 
-Q4_K superblocks will not line up with arbitrary channels, so dequant, gather, then requant.
+Q4_K superblocks will not line up with arbitrary channels, so dequant, gather, then requant Q4_K. Default remnant stays Q4 (`micro_llm.serve_ok=true`). `--q4-k-to-f16` is host debug only — F16 of a 75% FFN is ~25GB and must not load on the 5080.
 
 ## v1 product shape
 

@@ -5,7 +5,8 @@ packed remnant GGUF with the keep-mask baked into KV metadata.
 
 ```
 python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gguf
-python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gguf --ceiling-gb 10
+python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gguf --ceiling-gb 12
+python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gguf --ceiling-gb 10 --recover
 ```
 
 `--prune-table` may also be a JSON keep-mask (already cut) for debugging.
@@ -13,10 +14,11 @@ python -m export.pack --model full.gguf --prune-table dump.mlpt --out remnant.gg
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--ceiling-gb` | `12` | remnant *weight* ceiling in GiB (use `10` for 32k+vision) |
+| `--recover` | off | allow a 40% weak FFN cut (keep >= 10496). Default 25% (keep >= 13056) |
 | `--keep-vision` | off | v1 omits the vision tower unless set |
 | `--keep-mtp` | off | v1 omits MTP / nextn heads unless set |
-| `--q4-k-to-f16` | off | after Q4_K dequant+gather, emit F16 (no fake requant) |
-| `--table-json` | ? | dump the cut keep-mask as JSON |
+| `--q4-k-to-f16` | off | host debug only: after Q4_K dequant+gather, emit F16 (no fake requant). Bakes `micro_llm.serve_ok=false` |
+| `--table-json` | — | dump the cut keep-mask as JSON |
 
 ## Layout
 
@@ -26,6 +28,7 @@ export/
   cut.py          scores ? keep_channels / keep_packs / vocab_remap
   pack.py         CLI
   writer.py       gather + 256-byte-aligned GGUF write
+  serve_budget.py 15.2GB RTX 5080 serve stack (weights + 0.9 CUDA + KV)
   gather.py       same channel index on gate / up / down
   names.py        llama.cpp QWEN35 tensor names + pack-id map
   quant.py        F16/F32 pack; Q4_K dequant + requant hook
@@ -42,12 +45,25 @@ if sumsq == 0 and n_fired > 0:
     energy = n_fired * 1e-12
 ```
 
-Cut order: dead FFN (`n_fired == 0` AND not floor) ? lowest-energy non-floor
-survivors (only if still over the ceiling) ? dead DeltaNet packs (`n_spike == 0`,
-except protected layers 0, 1, n-2, n-1) ? unused vocab (bitset 0).
+Cut order: dead FFN (`n_fired == 0` AND not floor) → dead DeltaNet packs
+(`n_spike == 0`, except protected layers 0, 1, n-2, n-1) → unused vocab
+(bitset 0) → lowest-energy non-floor survivors (only if still over the ceiling).
+
+bytes/param = `17.1/28 ≈ 0.61`, or `source_file_size / n_params` when `--model`
+is given.
+
+Weak cap 25% (keep >= 13056 of 17408). `--recover` allows 40% (10496). Raise
+`CutCeilingError` if still over. Never hollow to 1 channel.
+
+If a layer's total `n_fired` is 0 and it has no floor bits: keep ALL 17408
+(missing hook). Never `kept=[0]`.
 
 Floor bit forces keep even if energy is zero. Ties:
 `(energy, n_fired, maxabs, layer, channel)`.
+
+Writer stream-writes one tensor at a time. `micro_llm.serve_ok` is baked
+`false` on `--q4-k-to-f16` and `true` on a real Q4 remnant. C++ serve refuses
+unless that key is present and true.
 
 ## Tensor names (llama.cpp `LLM_ARCH_QWEN35`)
 
@@ -114,13 +130,17 @@ and `micro_llm.tensor_align = 256`).
 
 ## Q4_K
 
-Do not slice Q4_K superblocks in place. v1:
+Do not slice Q4_K superblocks in place. Default pack path is a Q4 remnant
+so the 12GB / 0.61 estimator still holds. F16 of a 75% FFN is ~25GB — do
+not load that on the 5080.
 
 - F16 / F32: gather and write, fully supported
 - Q4_K copy-through (attention, no slice): raw bytes copied
-- Q4_K FFN / vocab: `dequantize` ? gather ? `requantize_q4_k` hook
-- Hook raises `Q4KRequantNotImplemented`. Pass `--q4-k-to-f16` to emit F16
-  after gather instead of faking a Q4_K write.
+- Q4_K FFN / vocab: `dequantize` → gather → real `requantize_q4_k` (llama.cpp
+  `quantize_row_q4_K_ref` port) → write Q4_K, `micro_llm.serve_ok=true`
+- `--q4-k-to-f16` is host debug only (emit F16 after gather;
+  `micro_llm.serve_ok=false`). C++ serve refuses. Last dim of a Q4_K write
+  must be a multiple of 256 (ffn_down keep counts: 13056 is).
 
 ## Tests
 

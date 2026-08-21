@@ -1,4 +1,5 @@
 #include "micro_llm/streamer.hpp"
+#include "micro_llm/ffn_reduce.hpp"
 
 #include <cstring>
 
@@ -75,6 +76,10 @@ bool TraceStreamer::pin(PinTarget t) {
     if (t == PinTarget::LmHead) {
         // Never pin lm_head next to embed / the resident set.
         return false;
+    }
+    if (t == PinTarget::CudaContext) {
+        // Persistent reduce scratch for the hour. Device-tap reuses this.
+        persistent_cuda_reduce().ensure(kFfnIntermediate);
     }
     resident_ |= pin_bit(t);
     return true;

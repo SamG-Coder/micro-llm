@@ -84,7 +84,7 @@ def test_floor_keeps_zero_energy_dead_is_cut() -> None:
         packs={p: (1, 0.0) for p in range(N_PACKS)},
         vocab=[1],
     )
-    table = cut_mlpt(dump, ceiling_gb=100.0)
+    table = cut_mlpt(dump, ceiling_gb=1000.0)
     assert 10 in table.keep_channels[5]
     assert 11 not in table.keep_channels[5]
     assert 12 in table.keep_channels[5]
@@ -96,7 +96,7 @@ def test_dead_pack_dropped_spiked_kept() -> None:
         packs={5: (2, 0.1)},
         vocab=[0],
     )
-    table = cut_mlpt(dump, ceiling_gb=100.0)
+    table = cut_mlpt(dump, ceiling_gb=1000.0)
     assert 5 in table.keep_packs
     assert 6 not in table.keep_packs
     assert 0 in table.keep_packs
@@ -110,5 +110,5 @@ def test_vocab_remap_dense() -> None:
         packs={p: (1, 0.0) for p in range(N_PACKS)},
         vocab=[10, 3, 99],
     )
-    table = cut_mlpt(dump, ceiling_gb=100.0)
+    table = cut_mlpt(dump, ceiling_gb=1000.0)
     assert table.vocab_remap == {3: 0, 10: 1, 99: 2}

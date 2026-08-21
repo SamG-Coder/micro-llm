@@ -15,6 +15,7 @@ from export.names import (
     KV_KEEP_PACKS,
     KV_KEEP_VISION,
     KV_PREFIX,
+    KV_SERVE_OK,
     KV_VOCAB_OLD,
     KV_VOCAB_ROWS,
     KV_VERSION,
@@ -35,6 +36,7 @@ class PruneTable:
     keep_vision: bool = False
     keep_mtp: bool = False
     n_layer: int = 0
+    serve_ok: bool = False  # C++ serve refuses unless present and true
 
     def old_ids_in_row_order(self) -> list[int]:
         if not self.vocab_remap:
@@ -52,6 +54,7 @@ class PruneTable:
             "vocab_remap": {str(k): v for k, v in sorted(self.vocab_remap.items())},
             "keep_vision": self.keep_vision,
             "keep_mtp": self.keep_mtp,
+            "serve_ok": self.serve_ok,
         }
 
 
@@ -157,6 +160,7 @@ def parse_prune_table(raw: Mapping[str, Any], n_layer: int) -> PruneTable:
         keep_vision=keep_vision,
         keep_mtp=keep_mtp,
         n_layer=n_layer,
+        serve_ok=bool(raw.get("serve_ok", False)),
     )
 
 
@@ -176,6 +180,7 @@ def encode_kv(table: PruneTable) -> dict[str, Any]:
         KV_VOCAB_ROWS: table.rows_in_row_order(),
         KV_KEEP_VISION: table.keep_vision,
         KV_KEEP_MTP: table.keep_mtp,
+        KV_SERVE_OK: bool(table.serve_ok),
     }
 
 
@@ -208,6 +213,7 @@ def decode_kv(fields: Mapping[str, Any]) -> PruneTable:
         keep_vision=bool(_get(KV_KEEP_VISION, False)),
         keep_mtp=bool(_get(KV_KEEP_MTP, False)),
         n_layer=len(keep_channels),
+        serve_ok=bool(_get(KV_SERVE_OK, False)),
     )
 
 

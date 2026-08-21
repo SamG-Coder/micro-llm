@@ -79,6 +79,12 @@ KV_VOCAB_OLD = "micro_llm.vocab_remap.old_ids"
 KV_VOCAB_ROWS = "micro_llm.vocab_remap.rows"
 KV_KEEP_VISION = "micro_llm.keep_vision"
 KV_KEEP_MTP = "micro_llm.keep_mtp"
+KV_SERVE_OK = "micro_llm.serve_ok"
+KV_CUDA_SCRATCH_BYTES = "micro_llm.cuda_scratch_bytes"
+KV_PER_TOKEN_FP16 = "micro_llm.kv_bytes_per_token_fp16"
+KV_PER_TOKEN_FP8 = "micro_llm.kv_bytes_per_token_fp8"
+KV_SERVE_USABLE_BYTES = "micro_llm.serve_usable_bytes"
+KV_WEIGHT_BYTES = "micro_llm.weight_bytes"
 KV_PREFIX = "micro_llm."
 
 

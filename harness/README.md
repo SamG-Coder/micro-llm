@@ -1,11 +1,7 @@
 # micro-llm-harness (v1 trace streamer)
 
 C++ trace streamer + prune-table dump for [micro-llm](https://github.com/SamG-Coder/micro-llm).
-This tree is the host-side scorer. It is **not** a 27B inference engine and it
-does not fork llama.cpp.
-
-Give a future live forward these hooks. Stream all, score, cut after. Hour-end
-writes **one** prune table for LLM Export.
+Host-side scorer plus a llama.cpp attach for a **real** Qwen 27B (3.6/3.8 hybrid) hour.
 
 MIT.
 
@@ -13,42 +9,56 @@ MIT.
 
 - Per-channel FFN energy: `n_fired`, `sumsq`, `maxabs` where
   fired = `|SiLU(gate) * up| > eps`
+- Device tap: `on_ffn_activations_device(layer, d_gate, d_up)` on live CUDA
+  pointers. Persistent reduce context. **No per-token cudaMalloc/H2D of gate/up.**
 - Per-token fired bitset (~140KB). OR into the high-loss floor **after logits**
-- DeltaNet packs, **global** id `0..47` (`n_spike`, `sumsq_residual`)
+- DeltaNet packs, **global** id `0..47`. Score
+  `r = ||out-in||_2 / (||in||_2 + 1e-12)`, default `spike_eps = 0.02`.
+  Identity must not spike.
+- MLPT flags bit1 + `u64 layer_hooked` trailer after vocab (header stays 80B).
+  Unwired = `n_tokens>0 && bit unset`. Dead = hooked && all `n_fired==0`.
+  Do not fake `n_fired`.
+- Serve gate: GGUF KV `micro_llm.serve_ok`. `remnant_may_serve` is true only
+  if the key is present and true. False = F16 host dump, refuse.
+  Packed FFN keep width must be a multiple of 256 (Q4_K). 13056 and 10496
+  are valid; 10445 is not.
 - Vocab bitset of original tokenizer IDs (248320)
 - Trace streamer control plane: pin CUDA + 16 Gated Attention blocks + KV +
   DeltaNet state + embed; two FFN scratch buffers; async prefetch of n+1;
   pinned host pages; `lm_head` only at logits; no mid-session shrink
-- Hour-end binary prune table + C++ load/save API
+- Live forward: `LlamaCppLiveForwardBackend` attaches to llama.cpp `cb_eval`
+  on the `qwen35` graph. `StubLiveForwardBackend` is tests-only.
+- CLI `micro-llm-trace` for the coding-assistant hour
 
 It does **not** dequant a whole FFN to FP16, does **not** allocate a
 `[chunk x 17408]` scratch, and does **not** pin `lm_head` next to embed.
+It does **not** invent a from-scratch 27B engine.
 
 ## Layout
 
 ```
 include/micro_llm/
-  types.hpp          constants, pack-id map, 256-byte align
-  prune_table.hpp    table + load/save
-  trace_hooks.hpp    what a future forward calls
+  types.hpp          constants, pack-id map, 256-byte align, remnant_may_serve
+  prune_table.hpp    table + load/save + layer_hooked
+  trace_hooks.hpp    host + device FFN taps, relative DeltaNet
   streamer.hpp       pin / double-buffer / prefetch / logits
-  ffn_reduce.hpp     per-token reduce (CPU, CUDA optional)
+  ffn_reduce.hpp     persistent CUDA context + CPU fallback
+  gguf_meta.hpp      KV probe (architecture, serve_ok, vision)
+  serve.hpp          remnant_may_serve from a remnant GGUF
+  graph_hooks.hpp    llama.cpp tensor-name matcher (compile-tested)
+  live_forward.hpp   stub + llama.cpp backends
   micro_llm.hpp      umbrella
 src/
-  prune_table.cpp
-  trace_hooks.cpp
-  streamer.cpp
-  ffn_reduce.cpp     CPU fallback
-  ffn_reduce.cu      CUDA stub (not required to build)
-  cli_dump.cpp       synthetic traffic ? one prune table
-tests/               serialize, pack id, channel align, floor OR, dead/spike
-docs/PRUNE_TABLE.md  exact dump format for LLM Export
-docs/PRUNE_TABLE.pack-id-fix.md
+  cli_dump.cpp       synthetic traffic → one prune table
+  cli_trace.cpp      micro-llm-trace (real hour when weights + llama.cpp)
+  llama_forward.cpp  llama.cpp attach (ifdef MICRO_LLM_HAS_LLAMA)
+tests/               serialize, pack id, floor, dead/spike, hooked, serve, live
 ```
 
 ## Build and test
 
-Needs C++17. CUDA / nvcc is optional.
+Needs C++17. CUDA / nvcc and llama.cpp are optional. Default `cmake` + `ctest`
+must pass **without** a 17GB GGUF.
 
 ```bash
 cmake -S . -B build
@@ -56,67 +66,92 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-CPU-only is the default. To try the CUDA kernel when `nvcc` is present:
+CPU-only is the default. CUDA kernel when `nvcc` is present:
 
 ```bash
 cmake -S . -B build -DMICRO_LLM_CUDA=ON
 ```
 
-CLI (synthetic hooks, no weights):
+## How to run the hour (local coding assistant)
+
+Job is text-only. Do not load vision (no mmproj, no `v.*` tower).
+
+1. Get a Qwen 3.6/3.8 27B GGUF (`general.architecture = qwen35`, 64 layers,
+   hidden 5120, FFN 17408, vocab 248320). Q4_K_M is the usual trace quant.
+2. Build harness against a llama.cpp that has `LLM_ARCH_QWEN35` / `qwen35.cpp`
+   (Gated DeltaNet + Gated Attention). Do not vendor the whole tree into this
+   repo if a checkout + thin adapter works:
 
 ```bash
-./build/micro-llm-dump --out prune_table.bin --tokens 8
+git clone --depth 1 https://github.com/ggml-org/llama.cpp.git /opt/llama.cpp
+cmake -S harness -B harness/build \
+  -DMICRO_LLM_LLAMA=ON \
+  -DMICRO_LLM_LLAMA_DIR=/opt/llama.cpp \
+  -DMICRO_LLM_CUDA=ON
+cmake --build harness/build -j
 ```
 
-## Where a future forward calls the hooks
+3. Run the hour. Streamer pins 16 GA + KV + DeltaNet state + embed, streams
+   FFNs with two scratches + prefetch n+1, `lm_head` only at logits:
 
-The engine you plug this into still owns matmuls, attention, sampling.
-Call the harness like this, **one token at a time**:
-
-```cpp
-#include "micro_llm/micro_llm.hpp"
-
-micro_llm::TraceStreamer streamer;   // two ~150MB FFN scratches, peak ~300MB
-micro_llm::TraceHooks hooks;         // fire_eps / spike_eps default 1e-6
-streamer.begin_session();            // pins CUDA, 16 GA blocks, KV, DeltaNet, embed
-hooks.mark_reserved_core(256);
-
-for (token) {
-    hooks.begin_token(t);
-    for (layer in 0..63) {
-        streamer.prefetch_ffn(layer + 1);          // async n+1, host pages pinned
-        streamer.bind_ffn(layer);
-        // live forward: compute this token's gate[17408], up[17408]
-        // tap activations ? do not dequant the whole FFN to FP16
-        hooks.on_ffn_activations(layer, gate, up); // warp-reduce, then evict
-        streamer.evict_ffn(layer);
-        if (micro_llm::is_delta_net_layer(layer)) {
-            const uint32_t pack = micro_llm::pack_id_from_delta_layer(layer);
-            hooks.on_delta_hidden(pack, hidden_in, hidden_out, 5120);
-        }
-    }
-    hooks.on_vocab_id(sampled_id);
-    hooks.on_topk_ids(topk, k);
-    streamer.enter_logits();                       // lm_head only here
-    // compute loss / special-token flag
-    hooks.after_logits(t, special_or_high_loss);   // OR per-token bitset into floor
-    streamer.leave_logits();
-}
-
-streamer.end_session();
-micro_llm::save_prune_table(hooks.table(), "prune_table.bin");
+```bash
+./harness/build/micro-llm-trace \
+  --model /path/to/qwen3.8-27b-q4_k_m.gguf \
+  --prompt "You are a local coding assistant. Work in this repo." \
+  --out prune_table.bin \
+  --n-predict 20000 \
+  --ctx 8192
 ```
 
-Spine: Gated Attention **block** (QKVO + 4 KV heads) is not scored for drop.
-The FFN after those 16 **is**. First two and last two layers are a no-drop
-**layer** floor; their FFNs still width-cut.
+Without weights the CLI exits non-zero:
 
-Pack ids are global `0..47`. Do not use `0..2` inside a group
-(see `docs/PRUNE_TABLE.pack-id-fix.md`).
+```text
+error: no weights at /path/to/missing.gguf
+```
 
-## Dump format
+Without llama.cpp linked, a valid GGUF is still probed, then the backend
+**refuses to fake the hour**:
 
-`docs/PRUNE_TABLE.md` is the file format for LLM Export: header, channel
-stats, 48 pack rows, floor bitset, vocab bitset. Packed tensors later need
-256-byte alignment; that constant is `micro_llm::kTensorAlign` and
-`kPackedAlign` on the types.
+```text
+error: Qwen 27B hybrid GGUF recognized, but llama.cpp is not linked. Rebuild: ...
+```
+
+`--stub` is tests-only. It does not produce a real 27B MLPT.
+
+4. After the hour, Export cuts (not this tree): unused-vocab strip + no vision
+   + ~8 dead packs, not an FFN-only 25% slash. Pack remnant, bake
+   `micro_llm.serve_ok=true` on a real Q4. C++ serve:
+
+```bash
+./harness/build/micro-llm-trace --check-serve remnant.gguf
+```
+
+`remnant_may_serve` is true only if `micro_llm.serve_ok` is present and true.
+False means F16 host dump — refuse. Packed FFN keep width
+(`micro_llm.keep_channels.n`, else `*.feed_forward_length`) must be a
+multiple of 256 (Q4_K superblock). 13056 (25% cap) and 10496 (40% recover
+floor) are valid; 10445 is not.
+
+## Attach point
+
+Verified: llama.cpp `llama_context_params.cb_eval`
+(`ggml_backend_sched_eval_callback`) after each graph node. `qwen35.cpp`
+names the sites we need (`ffn_gate-L`, `ffn_up-L`, `attn_residual-L`,
+`result_output`). After each FFN: device hook on gate/up. After each
+DeltaNet pack: relative residual. Vocab: prompt, sampled, top-k.
+`after_logits` for the floor bitset.
+
+If this llama.cpp build cannot execute the hybrid graph (missing Gated
+DeltaNet kernels), the backend reports `llama_decode` failure and does
+**not** write a successful-looking hour.
+
+## Dump format (harness writer)
+
+Header stays **80 bytes**. After the vocab bitset: `u64 layer_hooked`
+(bit L set when layer L's FFN hook ran). `flags` bit1 means the trailer
+is present. Old 17,997,328-byte files still load (no trailer → all bits
+unset). New files are 17,997,336 bytes.
+
+Unwired = `n_tokens>0 && bit unset`. Dead = hooked && all `n_fired==0`.
+
+Pack spike: `r = ||out-in||_2 / (||in||_2 + 1e-12) > spike_eps` (default 0.02).

@@ -100,6 +100,7 @@ void PruneTable::reset() {
     spike_eps = kDefaultSpikeEps;
     n_tokens = 0;
     flags = kPruneTableFlagHasFloor;
+    layer_hooked_ = 0;
 }
 
 ChannelStat& PruneTable::channel(uint32_t layer, uint32_t ch) {
@@ -152,9 +153,39 @@ bool PruneTable::pack_is_dead(uint32_t pack_id) const {
     return micro_llm::pack_is_dead(packs_[pack_id]);
 }
 
+void PruneTable::mark_layer_hooked(uint32_t layer) {
+    if (layer >= kNLayers) {
+        return;
+    }
+    layer_hooked_ |= (uint64_t{1} << layer);
+}
+
+bool PruneTable::layer_was_hooked(uint32_t layer) const {
+    if (layer >= kNLayers) {
+        return false;
+    }
+    return (layer_hooked_ & (uint64_t{1} << layer)) != 0;
+}
+
+bool PruneTable::layer_is_unwired(uint32_t layer) const {
+    return n_tokens > 0 && !layer_was_hooked(layer);
+}
+
+bool PruneTable::layer_is_dead(uint32_t layer) const {
+    if (!layer_was_hooked(layer)) {
+        return false;
+    }
+    for (uint32_t c = 0; c < kFfnIntermediate; ++c) {
+        if (channel(layer, c).n_fired != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool PruneTable::operator==(const PruneTable& o) const {
     if (fire_eps != o.fire_eps || spike_eps != o.spike_eps || n_tokens != o.n_tokens ||
-        flags != o.flags) {
+        flags != o.flags || layer_hooked_ != o.layer_hooked_) {
         return false;
     }
     if (channels_.size() != o.channels_.size() || packs_.size() != o.packs_.size()) {
@@ -196,7 +227,7 @@ bool save_prune_table(const PruneTable& table, const std::string& path, std::str
     write_le_f32(os, table.fire_eps);
     write_le_f32(os, table.spike_eps);
     write_le_u64(os, table.n_tokens);
-    write_le_u32(os, table.flags);
+    write_le_u32(os, table.flags | kPruneTableFlagLayerHooked);
     for (int i = 0; i < 7; ++i) {
         write_le_u32(os, 0);
     }
@@ -222,6 +253,8 @@ bool save_prune_table(const PruneTable& table, const std::string& path, std::str
              static_cast<std::streamsize>(PruneTable::floor_bytes()));
     os.write(reinterpret_cast<const char*>(table.vocab_bits()),
              static_cast<std::streamsize>(PruneTable::vocab_bytes()));
+    // Trailer after vocab. Header stays 80B.
+    write_le_u64(os, table.layer_hooked());
 
     if (!os) {
         set_err(err, "failed to write prune table");
@@ -317,6 +350,17 @@ bool load_prune_table(PruneTable& table, const std::string& path, std::string* e
                     static_cast<std::streamsize>(PruneTable::vocab_bytes()))) {
         set_err(err, "truncated vocab bitset");
         return false;
+    }
+
+    uint64_t hooked = 0;
+    if (read_le_u64(is, hooked)) {
+        table.set_layer_hooked_bits(hooked);
+        table.flags |= kPruneTableFlagLayerHooked;
+    } else if (flags & kPruneTableFlagLayerHooked) {
+        set_err(err, "truncated layer_hooked trailer");
+        return false;
+    } else {
+        table.set_layer_hooked_bits(0);
     }
     return true;
 }

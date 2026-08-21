@@ -45,7 +45,34 @@ int ffn_reduce_token_cuda(const float* /*gate*/, const float* /*up*/, float* /*a
     return -1;
 }
 
+int ffn_reduce_token_cuda_device(const float* /*d_gate*/, const float* /*d_up*/,
+                                 float* /*abs_out*/, uint8_t* /*fired_bits*/,
+                                 uint32_t /*n_channels*/, float /*eps*/) {
+    return -1;
+}
+
 ReduceBackend ffn_reduce_backend() { return ReduceBackend::Cpu; }
+
+CudaReduceContext::~CudaReduceContext() = default;
+
+bool CudaReduceContext::ensure(uint32_t /*n_channels*/) { return false; }
+
+void CudaReduceContext::release() {}
+
+int CudaReduceContext::reduce_device(const float*, const float*, float*, uint8_t*,
+                                     uint32_t, float) {
+    return -1;
+}
+
+int CudaReduceContext::reduce_host(const float*, const float*, float*, uint8_t*,
+                                   uint32_t, float) {
+    return -1;
+}
+
+CudaReduceContext& persistent_cuda_reduce() {
+    static CudaReduceContext ctx;
+    return ctx;
+}
 #endif
 
 }  // namespace micro_llm

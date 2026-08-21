@@ -3,6 +3,7 @@
 // Qwen 27B (3.6 / 3.8) constants for the v1 trace streamer.
 // Packed remnant tensors later need 256-byte alignment or 5080 kernels stall.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -19,6 +20,10 @@ inline constexpr uint32_t kNGatedAttnBlocks = 16;
 inline constexpr uint32_t kNKvHeads = 4;
 inline constexpr uint32_t kVocabSize = 248320;           // 248k, original tokenizer IDs
 inline constexpr uint32_t kTensorAlign = 256;            // packed-tensor alignment
+inline constexpr uint32_t kQ4KSuperblock = 256;          // Q4_K last-dim / FFN keep width
+inline constexpr uint32_t kWeakKeepMin27B = 13056;       // 25% cap; 51*256
+inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 41*256
+// 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
 inline constexpr uint32_t kFloorBitsetBytes =
@@ -27,7 +32,89 @@ inline constexpr uint32_t kVocabBitsetBytes = (kVocabSize + 7u) / 8u;
 inline constexpr uint32_t kPruneTableVersion = 1;
 inline constexpr char kPruneTableMagic[4] = {'M', 'L', 'P', 'T'};
 inline constexpr float kDefaultFireEps = 1.0e-6f;
-inline constexpr float kDefaultSpikeEps = 1.0e-6f;
+// Relative pack score: r = ||out-in||_2 / (||in||_2 + kRelResidualDenom).
+// Identity (out==in) must not spike. Absolute L2-vs-1e-6 was a false-spike trap.
+inline constexpr float kDefaultSpikeEps = 0.02f;
+inline constexpr float kRelResidualDenom = 1.0e-12f;
+
+// Remnant GGUF KV. C++ serve refuses unless this key is present and true.
+// Export sets it false for --q4-k-to-f16 (host debug / F16 dump). True on a real Q4 remnant.
+inline constexpr const char kKvServeOk[] = "micro_llm.serve_ok";
+inline constexpr const char kKvKeepChannelsN[] = "micro_llm.keep_channels.n";
+inline constexpr const char kKvCudaScratchBytes[] = "micro_llm.cuda_scratch_bytes";
+inline constexpr const char kKvPerTokenFp16[] = "micro_llm.kv_bytes_per_token_fp16";
+inline constexpr const char kKvPerTokenFp8[] = "micro_llm.kv_bytes_per_token_fp8";
+inline constexpr const char kKvServeUsableBytes[] = "micro_llm.serve_usable_bytes";
+inline constexpr const char kKvWeightBytes[] = "micro_llm.weight_bytes";
+
+// RTX 5080 serve stack. Prefer remnant file size over baked weight_bytes.
+// If those KV keys are missing, use these constants.
+inline constexpr uint64_t kGiB = 1024ull * 1024ull * 1024ull;
+inline constexpr uint64_t kCudaScratchBytes = (9ull * kGiB) / 10ull;           // 0.9 GiB
+inline constexpr uint64_t kServeUsableBytes = (152ull * kGiB) / 10ull;         // 15.2 GiB headless
+inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  // 14.5 GiB
+inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
+inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
+inline constexpr uint64_t kDefaultServeCtx = 8192ull;
+
+// Refuse unless serve_ok is present and true. Then refuse if
+// file_size + cuda_scratch + kv_bytes_per_token * ctx > usable (15.2 GiB default).
+inline constexpr bool remnant_serve_allowed(
+    bool key_present,
+    bool serve_ok,
+    uint64_t file_size = 0,
+    uint64_t ctx = kDefaultServeCtx,
+    uint64_t cuda_scratch = kCudaScratchBytes,
+    uint64_t kv_bytes_per_token = kKvBytesPerTokenFp16,
+    uint64_t usable = kServeUsableBytes) {
+    if (!key_present || !serve_ok) {
+        return false;
+    }
+    if (kv_bytes_per_token != 0 && ctx > (~uint64_t{0} / kv_bytes_per_token)) {
+        return false;
+    }
+    const uint64_t kv = kv_bytes_per_token * ctx;
+    if (file_size > usable) {
+        return false;
+    }
+    const uint64_t after_w = usable - file_size;
+    if (cuda_scratch > after_w) {
+        return false;
+    }
+    return kv <= (after_w - cuda_scratch);
+}
+
+// FFN keep width must be a multiple of 256 (Q4_K superblock).
+// 13056 and 10496 are valid; 10445 is not.
+inline constexpr bool ffn_keep_width_q4k_ok(uint32_t n) {
+    return n != 0 && (n % kQ4KSuperblock) == 0;
+}
+
+// Preferred name. True only if the KV is present AND true. False = F16 host dump, refuse.
+// Packed FFN intermediate, when known (ffn_keep != 0), must be a Q4_K multiple of 256.
+inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
+                                        uint32_t ffn_keep = 0) {
+    if (ffn_keep != 0 && !ffn_keep_width_q4k_ok(ffn_keep)) {
+        return false;
+    }
+    return remnant_serve_allowed(key_present, serve_ok);
+}
+
+// r = ||out-in||_2 / (||in||_2 + 1e-12). Identity => 0.
+inline float relative_residual_l2(const float* hidden_in, const float* hidden_out,
+                                  uint32_t hidden_dim) {
+    double sumsq_d = 0.0;
+    double sumsq_in = 0.0;
+    for (uint32_t i = 0; i < hidden_dim; ++i) {
+        const double in = static_cast<double>(hidden_in[i]);
+        const double d = static_cast<double>(hidden_out[i]) - in;
+        sumsq_d += d * d;
+        sumsq_in += in * in;
+    }
+    const double num = std::sqrt(sumsq_d);
+    const double den = std::sqrt(sumsq_in) + static_cast<double>(kRelResidualDenom);
+    return static_cast<float>(num / den);
+}
 
 // Channel is ONE index across gate, up, and down. Export gathers that same
 // index from all three.
