@@ -107,6 +107,8 @@ Packed remnant only. Surviving tensors, densely laid out, 256-byte aligned. No o
 
 12GB is the weight budget. CUDA plus KV still sit on top. Prefer FP8 KV on Blackwell before cutting more FFN.
 
+The 15.2GB RTX 5080 gate is the serve stack, not a second cut ceiling: remnant file bytes + 0.9GB CUDA/decode scratch + KV(ctx) (64KB/token FP16, 32KB/token FP8) must fit in 15.2GB headless or 14.5GB with a display. Serve prefers the on-disk remnant size over the baked `micro_llm.weight_bytes` estimate. A coding remnant must not include vision (`keep_vision` fails the gate), and serve still refuses unless `micro_llm.serve_ok` is present and true.
+
 Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
 ## Export

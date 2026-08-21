@@ -27,3 +27,4 @@ void test_channel_alignment(TestContext& ctx);
 void test_bitset_floor_or_after_logits(TestContext& ctx);
 void test_dead_vs_spike_pack(TestContext& ctx);
 void test_serve_ok_refuses_unless_present_and_true(TestContext& ctx);
+void test_serve_stack_gate(TestContext& ctx);

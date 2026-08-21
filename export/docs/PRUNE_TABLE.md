@@ -180,6 +180,11 @@ One packed file. The keep-mask lives in a KV block so remnant and map cannot dri
 | `micro_llm.keep_vision` | bool | v1 default false |
 | `micro_llm.keep_mtp` | bool | v1 default false |
 | `micro_llm.serve_ok` | bool | `false` on `--q4-k-to-f16` (host debug); `true` on a real Q4 remnant. C++ serve refuses unless present and true. |
+| `micro_llm.cuda_scratch_bytes` | u64 | `0.9` GiB as integer bytes |
+| `micro_llm.kv_bytes_per_token_fp16` | u64 | `65536` |
+| `micro_llm.kv_bytes_per_token_fp8` | u64 | `32768` |
+| `micro_llm.serve_usable_bytes` | u64 | `15.2` GiB headless, integer bytes |
+| `micro_llm.weight_bytes` | u64 | written first as `cut.estimate_weight_bytes` (KV is before tensors); patched after stream-write to on-disk file size. Serve prefers file size over this estimate. |
 
 - Attention / Gated Attention (QKVO + 4 KV heads) copy through
 - FFN packed to `keep_channels` (same index, gate / up / down)

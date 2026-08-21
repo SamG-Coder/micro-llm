@@ -13,6 +13,7 @@ int main() {
         {"bitset_floor_or_after_logits", test_bitset_floor_or_after_logits},
         {"dead_vs_spike_pack", test_dead_vs_spike_pack},
         {"serve_ok_refuses_unless_present_and_true", test_serve_ok_refuses_unless_present_and_true},
+        {"serve_stack_gate", test_serve_stack_gate},
     };
 
     int failed = 0;

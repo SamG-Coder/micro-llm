@@ -7,6 +7,7 @@ gather + write_tensor_data + drop). Do not buffer the whole remnant.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,19 +18,25 @@ from gguf import (
     GGUFWriter,
 )
 
+from export.cut import HIDDEN_27B, estimate_weight_bytes
 from export.gather import axis_matching, gather_axis
 from export.names import (
     KV_ALIGN,
+    KV_CUDA_SCRATCH_BYTES,
     KV_KEEP_CH_IDS,
     KV_KEEP_CH_N,
     KV_KEEP_MTP,
     KV_KEEP_PACKS,
     KV_KEEP_VISION,
+    KV_PER_TOKEN_FP16,
+    KV_PER_TOKEN_FP8,
     KV_PREFIX,
     KV_SERVE_OK,
+    KV_SERVE_USABLE_BYTES,
     KV_VOCAB_OLD,
     KV_VOCAB_ROWS,
     KV_VERSION,
+    KV_WEIGHT_BYTES,
     TENSOR_ALIGN,
     is_deltanet_mixer,
     is_embed,
@@ -41,6 +48,12 @@ from export.names import (
     parse_blk,
 )
 from export.prune_table import PruneTable, encode_kv
+from export.serve_budget import (
+    CUDA_SCRATCH_BYTES,
+    KV_BYTES_PER_TOKEN_FP16,
+    KV_BYTES_PER_TOKEN_FP8,
+    SERVE_USABLE_HEADLESS_BYTES,
+)
 from export.quant import (
     Q4_K_TYPE_SIZE,
     QK_K,
@@ -156,8 +169,53 @@ def copy_source_kv(reader: GGUFReader, writer: GGUFWriter) -> None:
             writer.add_key_value(key, val, main)
 
 
-def write_prune_kv(writer: GGUFWriter, table: PruneTable, *, serve_ok: bool | None = None) -> None:
-    """Bake keep_channels / keep_packs / vocab_remap / serve_ok. Skip empty arrays."""
+def estimate_baked_weight_bytes(
+    table: PruneTable,
+    *,
+    hidden: int = HIDDEN_27B,
+    n_vocab: int = 0,
+) -> int:
+    """cut.estimate_weight_bytes for the KV block. Serve prefers on-disk file size."""
+    n_kept = len(table.old_ids_in_row_order()) or int(n_vocab)
+    return estimate_weight_bytes(
+        table.keep_channels,
+        table.keep_packs,
+        n_kept,
+        hidden=int(hidden),
+    )
+
+
+def patch_uint64_kv(path: str, key: str, value: int) -> bool:
+    """Overwrite a UINT64 KV in place after stream-write. Not a second tensor rewrite."""
+    reader = GGUFReader(path, "r+")
+    try:
+        field = reader.get_field(key)
+        if field is None or not field.data:
+            return False
+        part_index = int(field.data[0])
+        field.parts[part_index][0] = np.uint64(value)
+        reader.data.flush()
+        return True
+    finally:
+        data = getattr(reader, "data", None)
+        if data is not None:
+            del reader.data
+
+
+def write_prune_kv(
+    writer: GGUFWriter,
+    table: PruneTable,
+    *,
+    serve_ok: bool | None = None,
+    weight_bytes: int | None = None,
+) -> None:
+    """Bake keep_channels / keep_packs / vocab_remap / serve_ok / 5080 serve stack.
+
+    GGUF KV is written before tensors, so weight_bytes here is
+    cut.estimate_weight_bytes. After stream-write, write_packed_gguf patches
+    micro_llm.weight_bytes to the on-disk file size in place. The serve path
+    prefers that file size over this KV estimate.
+    """
     if serve_ok is not None:
         table.serve_ok = bool(serve_ok)
     payload = encode_kv(table)
@@ -167,6 +225,13 @@ def write_prune_kv(writer: GGUFWriter, table: PruneTable, *, serve_ok: bool | No
     writer.add_bool(KV_KEEP_MTP, bool(payload[KV_KEEP_MTP]))
     # Always present. C++ serve refuses unless this is true.
     writer.add_bool(KV_SERVE_OK, bool(payload[KV_SERVE_OK]))
+    writer.add_uint64(KV_CUDA_SCRATCH_BYTES, int(CUDA_SCRATCH_BYTES))
+    writer.add_uint64(KV_PER_TOKEN_FP16, int(KV_BYTES_PER_TOKEN_FP16))
+    writer.add_uint64(KV_PER_TOKEN_FP8, int(KV_BYTES_PER_TOKEN_FP8))
+    writer.add_uint64(KV_SERVE_USABLE_BYTES, int(SERVE_USABLE_HEADLESS_BYTES))
+    if weight_bytes is None:
+        weight_bytes = estimate_baked_weight_bytes(table)
+    writer.add_uint64(KV_WEIGHT_BYTES, int(weight_bytes))
     packs = [int(x) for x in payload[KV_KEEP_PACKS]]
     if packs:
         writer.add_array(KV_KEEP_PACKS, packs)
@@ -476,10 +541,13 @@ def write_packed_gguf(
         )
     table.serve_ok = bool(serve_ok)
 
+    hidden = infer_n_embd(reader, HIDDEN_27B)
+    weight_est = estimate_baked_weight_bytes(table, hidden=hidden, n_vocab=n_vocab)
+
     writer = GGUFWriter(out_path, arch_name)
     writer.add_custom_alignment(TENSOR_ALIGN)
     copy_source_kv(reader, writer)
-    write_prune_kv(writer, table, serve_ok=serve_ok)
+    write_prune_kv(writer, table, serve_ok=serve_ok, weight_bytes=weight_est)
 
     plans: list[tuple[Any, _OutPlan]] = []
     for t in reader.tensors:
@@ -512,6 +580,9 @@ def write_packed_gguf(
         del array
 
     writer.close()
+    # Serve prefers on-disk file size over the KV estimate written before tensors.
+    file_size = int(Path(out_path).stat().st_size)
+    patch_uint64_kv(out_path, KV_WEIGHT_BYTES, file_size)
     return names
 
 

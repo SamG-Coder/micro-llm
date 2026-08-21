@@ -28,6 +28,7 @@ export/
   cut.py          scores ? keep_channels / keep_packs / vocab_remap
   pack.py         CLI
   writer.py       gather + 256-byte-aligned GGUF write
+  serve_budget.py 15.2GB RTX 5080 serve stack (weights + 0.9 CUDA + KV)
   gather.py       same channel index on gate / up / down
   names.py        llama.cpp QWEN35 tensor names + pack-id map
   quant.py        F16/F32 pack; Q4_K dequant + requant hook

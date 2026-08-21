@@ -32,9 +32,47 @@ inline constexpr float kDefaultSpikeEps = 1.0e-6f;
 // Remnant GGUF KV. C++ serve refuses unless this key is present and true.
 // Export sets it false for --q4-k-to-f16 (host debug only). True on a real Q4 remnant.
 inline constexpr const char kKvServeOk[] = "micro_llm.serve_ok";
+inline constexpr const char kKvCudaScratchBytes[] = "micro_llm.cuda_scratch_bytes";
+inline constexpr const char kKvPerTokenFp16[] = "micro_llm.kv_bytes_per_token_fp16";
+inline constexpr const char kKvPerTokenFp8[] = "micro_llm.kv_bytes_per_token_fp8";
+inline constexpr const char kKvServeUsableBytes[] = "micro_llm.serve_usable_bytes";
+inline constexpr const char kKvWeightBytes[] = "micro_llm.weight_bytes";
 
-inline constexpr bool remnant_serve_allowed(bool key_present, bool serve_ok) {
-    return key_present && serve_ok;
+// RTX 5080 serve stack. Prefer remnant file size over baked weight_bytes.
+// If those KV keys are missing, use these constants.
+inline constexpr uint64_t kGiB = 1024ull * 1024ull * 1024ull;
+inline constexpr uint64_t kCudaScratchBytes = (9ull * kGiB) / 10ull;           // 0.9 GiB
+inline constexpr uint64_t kServeUsableBytes = (152ull * kGiB) / 10ull;         // 15.2 GiB headless
+inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  // 14.5 GiB
+inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
+inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
+inline constexpr uint64_t kDefaultServeCtx = 8192ull;
+
+// Refuse unless serve_ok is present and true. Then refuse if
+// file_size + cuda_scratch + kv_bytes_per_token * ctx > usable (15.2 GiB default).
+inline constexpr bool remnant_serve_allowed(
+    bool key_present,
+    bool serve_ok,
+    uint64_t file_size = 0,
+    uint64_t ctx = kDefaultServeCtx,
+    uint64_t cuda_scratch = kCudaScratchBytes,
+    uint64_t kv_bytes_per_token = kKvBytesPerTokenFp16,
+    uint64_t usable = kServeUsableBytes) {
+    if (!key_present || !serve_ok) {
+        return false;
+    }
+    if (kv_bytes_per_token != 0 && ctx > (~uint64_t{0} / kv_bytes_per_token)) {
+        return false;
+    }
+    const uint64_t kv = kv_bytes_per_token * ctx;
+    if (file_size > usable) {
+        return false;
+    }
+    const uint64_t after_w = usable - file_size;
+    if (cuda_scratch > after_w) {
+        return false;
+    }
+    return kv <= (after_w - cuda_scratch);
 }
 
 // Channel is ONE index across gate, up, and down. Export gathers that same
