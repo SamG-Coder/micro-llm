@@ -29,6 +29,14 @@ inline constexpr char kPruneTableMagic[4] = {'M', 'L', 'P', 'T'};
 inline constexpr float kDefaultFireEps = 1.0e-6f;
 inline constexpr float kDefaultSpikeEps = 1.0e-6f;
 
+// Remnant GGUF KV. C++ serve refuses unless this key is present and true.
+// Export sets it false for --q4-k-to-f16 (host debug only). True on a real Q4 remnant.
+inline constexpr const char kKvServeOk[] = "micro_llm.serve_ok";
+
+inline constexpr bool remnant_serve_allowed(bool key_present, bool serve_ok) {
+    return key_present && serve_ok;
+}
+
 // Channel is ONE index across gate, up, and down. Export gathers that same
 // index from all three.
 struct ChannelIndex {

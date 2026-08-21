@@ -104,7 +104,13 @@ total                            = 17,997,328 bytes
 ## What Export does with this file (not this tree)
 
 Collapse scores to a keep-mask against the remnant ceiling. Cut dead FFN
-first, then weak, then dead DeltaNet packs (`n_spike == 0`), then unused
-vocab. Never drop first/last two layers. Never drop the 16 Gated Attention
-blocks. Bake the keep-mask into the packed GGUF KV block. Tensors 256-byte
-aligned.
+first, then dead DeltaNet packs (`n_spike == 0`), then unused vocab, then
+weak FFN (only if still over the ceiling). Weak cap is 25% (keep >= 13056
+of 17408); recover allows 40% (keep >= 10445). Raise if still over. Never
+hollow a layer to 1 channel. If a layer's total `n_fired` is 0 and it has
+no floor bits, keep all 17408 (missing hook). bytes/param is 17.1/28 ≈ 0.61,
+or `source_file_size / n_params` when `--model` is given. Never drop
+first/last two layers. Never drop the 16 Gated Attention blocks. Bake the
+keep-mask into the packed GGUF KV block, including `micro_llm.serve_ok`
+(false on `--q4-k-to-f16`; true on a real Q4 remnant). C++ serve refuses
+unless that key is present and true. Tensors 256-byte aligned.

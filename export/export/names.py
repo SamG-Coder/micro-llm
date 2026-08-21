@@ -79,6 +79,7 @@ KV_VOCAB_OLD = "micro_llm.vocab_remap.old_ids"
 KV_VOCAB_ROWS = "micro_llm.vocab_remap.rows"
 KV_KEEP_VISION = "micro_llm.keep_vision"
 KV_KEEP_MTP = "micro_llm.keep_mtp"
+KV_SERVE_OK = "micro_llm.serve_ok"
 KV_PREFIX = "micro_llm."
 
 

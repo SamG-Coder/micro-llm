@@ -49,6 +49,7 @@ add_executable(micro_llm_tests
   tests/test_channel_align.cpp
   tests/test_bitset_floor.cpp
   tests/test_dead_spike.cpp
+  tests/test_serve_ok.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(micro_llm_tests PRIVATE micro_llm)

@@ -41,7 +41,7 @@ src/
   ffn_reduce.cpp     CPU fallback
   ffn_reduce.cu      CUDA stub (not required to build)
   cli_dump.cpp       synthetic traffic ? one prune table
-tests/               serialize, pack id, channel align, floor OR, dead/spike
+tests/               serialize, pack id, channel align, floor OR, dead/spike, serve_ok
 docs/PRUNE_TABLE.md  exact dump format for LLM Export
 docs/PRUNE_TABLE.pack-id-fix.md
 ```

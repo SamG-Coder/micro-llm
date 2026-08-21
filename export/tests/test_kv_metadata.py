@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from gguf import GGUFReader
 
-from export.names import KV_KEEP_CH_IDS, KV_KEEP_CH_N, KV_KEEP_PACKS, KV_VOCAB_OLD, KV_VOCAB_ROWS
+from export.names import (
+    KV_KEEP_CH_IDS,
+    KV_KEEP_CH_N,
+    KV_KEEP_PACKS,
+    KV_SERVE_OK,
+    KV_VOCAB_OLD,
+    KV_VOCAB_ROWS,
+)
 from export.prune_table import decode_kv, fields_from_reader
 
 
@@ -17,6 +24,10 @@ def test_kv_round_trip(remnant_gguf, prune_table):
     assert baked.vocab_remap == prune_table.vocab_remap
     assert baked.keep_vision is False
     assert baked.keep_mtp is False
+    # Synthetic F16 remnant is not a real Q4 remnant.
+    assert baked.serve_ok is False
+    assert reader.get_field(KV_SERVE_OK) is not None
+    assert reader.get_field(KV_SERVE_OK).contents() is False
 
     # Arrays are present as typed KV, not only a JSON blob.
     assert reader.get_field(KV_KEEP_PACKS) is not None
@@ -37,3 +48,4 @@ def test_alignment_key(remnant_gguf):
     assert reader.get_field("general.alignment").contents() == 256
     assert reader.get_field("micro_llm.tensor_align").contents() == 256
     assert reader.get_field("micro_llm.version").contents() == 1
+    assert reader.get_field("micro_llm.serve_ok").contents() is False

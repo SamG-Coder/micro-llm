@@ -12,6 +12,7 @@ int main() {
         {"channel_alignment", test_channel_alignment},
         {"bitset_floor_or_after_logits", test_bitset_floor_or_after_logits},
         {"dead_vs_spike_pack", test_dead_vs_spike_pack},
+        {"serve_ok_refuses_unless_present_and_true", test_serve_ok_refuses_unless_present_and_true},
     };
 
     int failed = 0;
