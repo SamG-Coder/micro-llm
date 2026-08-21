@@ -33,6 +33,8 @@ Two loaders, one file format. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 
 Harness and export are on main. Streamer dumps scores. Packer cuts and writes the remnant.
 
+First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.md).
+
 ## Build
 
 cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure
