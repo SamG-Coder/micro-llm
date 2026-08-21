@@ -1,71 +1,110 @@
-# Prune table
+# Prune table dump format (v1)
 
-Hour-end dump. One file. This is the contract between the trace hooks and the packed GGUF writer.
+Hour-end dump. **One file.** Contract between the trace hooks and LLM Export.
 
 v1: stream all, score, cut after. No mid-session shrink.
 
-## What the hooks write
+File is little-endian. Magic `MLPT`. Version `1`.
 
-### FFN channels
+C++ API: `micro_llm::save_prune_table` / `micro_llm::load_prune_table`
+in `include/micro_llm/prune_table.hpp`.
 
-One row per `(layer, channel)`.
+## Header (80 bytes)
 
-`channel` is one index across gate, up, and down. Export gathers that same index from all three.
+| Offset | Type | Field | Value |
+| ---: | --- | --- | --- |
+| 0 | char[4] | magic | `M L P T` |
+| 4 | u32 | version | `1` |
+| 8 | u32 | n_layers | `64` |
+| 12 | u32 | n_ffn_channels | `17408` |
+| 16 | u32 | n_packs | `48` |
+| 20 | u32 | vocab_size | `248320` |
+| 24 | u32 | tensor_align | `256` |
+| 28 | u32 | header_size | `80` |
+| 32 | f32 | fire_eps | fired if `\|SiLU(gate)*up\| > eps` |
+| 36 | f32 | spike_eps | spike if `\|hidden_out-hidden_in\| > eps` |
+| 40 | u64 | n_tokens | tokens that reached `after_logits` |
+| 48 | u32 | flags | bit0 = floor bitset present |
+| 52 | u32[7] | reserved | zero |
 
-| Field | Meaning |
-| --- | --- |
-| `layer` | Layer index, 0..63 |
-| `channel` | Intermediate slot, 0..17407 |
-| `n_fired` | Count of tokens where `\|SiLU(gate) * up\| > eps` |
-| `sumsq` | Sum of squares of that activation |
-| `maxabs` | Max abs of that activation |
+`tensor_align` is the packed-tensor alignment Export must use (256 bytes).
+The same constant lives on the C++ types as `kPackedAlign` / `kTensorAlign`.
 
-Fired means `|SiLU(gate) * up|` above eps. Dead = `n_fired == 0`. Weak = bottom energy among survivors.
+## Channel stats
 
-Floor: if it fired even once on a special or high-loss token, it stays.
+Immediately after the header: `n_layers * n_ffn_channels` records, row-major
+`index = layer * 17408 + channel`.
 
-The 16 Gated Attention **blocks** (QKVO + 4 KV heads) are not in this table. The FFN after those 16 **is**.
+Each record is 16 bytes:
 
-### DeltaNet packs
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | u64 | `n_fired` |
+| 8 | f32 | `sumsq` of `SiLU(gate)*up` |
+| 12 | f32 | `maxabs` of that activation |
 
-One row per pack. Keep or drop as a unit.
+`channel` is **one index** across gate, up, and down. Export gathers that
+same index from all three.
 
-| Field | Meaning |
-| --- | --- |
-| `pack` | Pack id in the 4-layer group |
-| `n_spike` | Times residual `\|hidden_out - hidden_in\|` exceeded eps |
-| `sumsq_residual` | Sum of squares of that residual |
+Fired means `|SiLU(gate)*up| > fire_eps`. Dead = `n_fired == 0`.
 
-A pack is not dead if `n_spike > 0`, even if the hour average looks like identity.
+The 16 Gated Attention **blocks** (QKVO + 4 KV heads) are not in this table.
+The FFN after those 16 **is** (layers 3,7,...,63 still have channel rows).
 
-### Vocab
+First two and last two layers (0, 1, 62, 63): do not DROP the layer. FFN
+still width-cuts; their channel rows are scored like every other layer.
 
-Bitset, original tokenizer IDs.
+## Pack stats
 
-Keep if the id showed up in the prompt, the sampled output, or top-k logits, plus a reserved core.
+Next: 48 records, index = **global pack id 0..47**.
+
+Each record is 24 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | u32 | `pack` (must equal the index, 0..47) |
+| 4 | u32 | `layer` = `4*group + slot` |
+| 8 | u64 | `n_spike` |
+| 16 | f64 | `sumsq_residual` of `\|hidden_out-hidden_in\|` |
+
+`n_spike > 0` means not dead. See [PRUNE_TABLE.pack-id-fix.md](PRUNE_TABLE.pack-id-fix.md).
+
+## Floor bitset
+
+Next: `64 * 17408 / 8 = 139264` bytes (~140KB).
+
+Bit `layer * 17408 + channel` is 1 if that channel fired on a special or
+high-loss token. The FFN hook cannot decide this (loss is unknown). The
+hooks keep a per-token fired bitset of the same size and **OR it into this
+floor after logits** when the token was special or high-loss.
+
+A floor bit means Export must keep the channel even if energy is weak.
+
+## Vocab bitset
+
+Next: `(248320 + 7) / 8 = 31040` bytes.
+
+Bit `token_id` is 1 if the original tokenizer ID showed up in the prompt,
+the sampled output, or top-k logits, or is in the reserved core.
 
 Tokenizer IDs stay original. Remap is embed gather + `lm_head` write only.
 
-## What the cut emits
-
-After the hour, collapse scores to a keep-mask against the remnant ceiling (12GB weights for 8-16k, 10GB if 32k plus vision). CUDA and KV sit on top of that.
+## Sizes
 
 ```
-keep_channels[layer] = sorted unique channel ids
-keep_packs[]         = pack ids to keep
-vocab_remap          = old_id -> dense remnant row
+header          80
+channels        64 * 17408 * 16  = 17,825,792
+packs           48 * 24          =      1,152
+floor bitset                     =    139,264
+vocab bitset                     =     31,040
+---------------------------------------------
+total                            = 17,997,328 bytes
 ```
 
-Cut dead FFN first, then weak, then dead DeltaNet packs (no spikes), then unused vocab. Never drop first two or last two layers. Never drop the 16 Gated Attention blocks.
+## What Export does with this file (not this tree)
 
-## What Export bakes into the GGUF
-
-One packed file. Prune table lives in a KV block so remnant and map cannot drift.
-
-- Attention copies through
-- FFN packed to `keep_channels` (same index, gate/up/down)
-- Dead DeltaNet packs dropped
-- Embed and `lm_head` remapped
-- Tensors 256-byte aligned
-
-Serve path reads new shapes plus that KV block. No full-GGUF-plus-mask.
+Collapse scores to a keep-mask against the remnant ceiling. Cut dead FFN
+first, then weak, then dead DeltaNet packs (`n_spike == 0`), then unused
+vocab. Never drop first/last two layers. Never drop the 16 Gated Attention
+blocks. Bake the keep-mask into the packed GGUF KV block. Tensors 256-byte
+aligned.

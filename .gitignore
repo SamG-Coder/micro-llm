@@ -1,0 +1,15 @@
+/build/
+/cmake-build-*/
+/harness/build/
+*.bin
+*.o
+*.a
+CMakeCache.txt
+CMakeFiles/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.eggs/
+dist/
