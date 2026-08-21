@@ -41,9 +41,9 @@ These spine pieces are not scored for deletion.
 
 A **section** is one of three things:
 
-1. **FFN channel** — one index across gate, up, and down in a layer (17408 intermediate slots). One index so Export's gather stays aligned. This is the big cut. Real weight lives in the FFNs (~60%), including the FFNs after the 16 Gated Attention blocks.
-2. **DeltaNet pack** — one of the three linear-attention blocks in each 4-layer group. Keep or drop as a unit. 8 packs dropped is safe without recovery. 16 needs a short recover.
-3. **Vocab row** — one embed row plus its `lm_head` twin. Vocab is 248k. Embed plus `lm_head` is about 2.5B params if untied. First thing to strip for a job.
+1. **FFN channel** ? one index across gate, up, and down in a layer (17408 intermediate slots). One index so Export's gather stays aligned. This is the big cut. Real weight lives in the FFNs (~60%), including the FFNs after the 16 Gated Attention blocks.
+2. **DeltaNet pack** ? one of the three linear-attention blocks in each 4-layer group. Keep or drop as a unit. 8 packs dropped is safe without recovery. 16 needs a short recover.
+3. **Vocab row** ? one embed row plus its `lm_head` twin. Vocab is 248k. Embed plus `lm_head` is about 2.5B params if untied. First thing to strip for a job.
 
 Free cuts when the job allows: vision tower (text-only), unused vocab rows, MTP heads if we skip speculative decode.
 
@@ -128,3 +128,21 @@ Q4_K superblocks will not line up with arbitrary channels, so dequant, gather, t
 3. Emit keep-mask / prune table.
 4. Export packed GGUF.
 5. Reuse that remnant for the job on the 5080.
+
+## Streamer traps (do not skip)
+
+- Tap |SiLU(gate)*up| from the live forward. Do not dequant the whole FFN to FP16. Do not materialize a chunk-by-17408 scratch. Per-token warp reduce, then evict.
+- lm_head only at logits. Do not pin it next to embed.
+- Prefetch only overlaps if host pages are pinned. Double-buffer peak is 300MB, not 150.
+
+## Scoring traps (do not skip)
+
+- Spine is the Gated Attention block (QKVO plus the 4 KV heads), not the whole layer. The FFN after those 16 still width-cuts.
+- Pack ids are global 0..47, not 0..2 inside the group. See PRUNE_TABLE.pack-id-fix.md.
+- First two and last two means do not drop the layer. The FFN there still width-cuts.
+- High-loss floor is a per-token fired bitset (~140KB), OR into the floor after logits if that token was special or high-loss.
+- A DeltaNet pack is not dead if n_spike > 0, even if the hour average looks like identity.
+
+## MLPT dump
+
+Hour-end file is little-endian, magic MLPT, 80-byte header, then 64x17408 channel rows, packs 0..47, floor bitset, vocab bitset. Exact layout in PRUNE_TABLE.md. C++ dumps scores only. Export cuts and packs.

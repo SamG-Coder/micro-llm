@@ -21,13 +21,23 @@ Full Qwen 27B at Q4_K_M is about **17.1GB**. It does not fit. The remnant has to
 
 Two loaders, one file format. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+## Layout
+
+| Path | What |
+| --- | --- |
+| [harness/](harness/) | C++ trace streamer. Scores the hour. Writes one MLPT. Does not cut. |
+| [export/](export/) | Packer. Reads MLPT + full GGUF, cuts, writes one packed remnant GGUF. |
+| [docs/PRUNE_TABLE.md](docs/PRUNE_TABLE.md) | MLPT format |
+
 ## Status
 
-Design locked. Implementation starting.
+Harness and export are on main. Streamer dumps scores. Packer cuts and writes the remnant.
 
-- Trace path: stream FFNs, pin attention / KV / DeltaNet state / embed
-- Serve path: packed remnant, no offload
-- Export: one GGUF, prune table baked in, tokenizer IDs stay original
+## Build
+
+cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure
+
+cd export && pip install -r requirements.txt && pytest -q
 
 ## License
 
