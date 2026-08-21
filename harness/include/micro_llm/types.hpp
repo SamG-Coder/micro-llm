@@ -20,6 +20,10 @@ inline constexpr uint32_t kNGatedAttnBlocks = 16;
 inline constexpr uint32_t kNKvHeads = 4;
 inline constexpr uint32_t kVocabSize = 248320;           // 248k, original tokenizer IDs
 inline constexpr uint32_t kTensorAlign = 256;            // packed-tensor alignment
+inline constexpr uint32_t kQ4KSuperblock = 256;          // Q4_K last-dim / FFN keep width
+inline constexpr uint32_t kWeakKeepMin27B = 13056;       // 25% cap; 51*256
+inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 41*256
+// 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
 inline constexpr uint32_t kFloorBitsetBytes =
@@ -36,6 +40,7 @@ inline constexpr float kRelResidualDenom = 1.0e-12f;
 // Remnant GGUF KV. C++ serve refuses unless this key is present and true.
 // Export sets it false for --q4-k-to-f16 (host debug / F16 dump). True on a real Q4 remnant.
 inline constexpr const char kKvServeOk[] = "micro_llm.serve_ok";
+inline constexpr const char kKvKeepChannelsN[] = "micro_llm.keep_channels.n";
 inline constexpr const char kKvCudaScratchBytes[] = "micro_llm.cuda_scratch_bytes";
 inline constexpr const char kKvPerTokenFp16[] = "micro_llm.kv_bytes_per_token_fp16";
 inline constexpr const char kKvPerTokenFp8[] = "micro_llm.kv_bytes_per_token_fp8";
@@ -79,8 +84,19 @@ inline constexpr bool remnant_serve_allowed(
     return kv <= (after_w - cuda_scratch);
 }
 
+// FFN keep width must be a multiple of 256 (Q4_K superblock).
+// 13056 and 10496 are valid; 10445 is not.
+inline constexpr bool ffn_keep_width_q4k_ok(uint32_t n) {
+    return n != 0 && (n % kQ4KSuperblock) == 0;
+}
+
 // Preferred name. True only if the KV is present AND true. False = F16 host dump, refuse.
-inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok) {
+// Packed FFN intermediate, when known (ffn_keep != 0), must be a Q4_K multiple of 256.
+inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
+                                        uint32_t ffn_keep = 0) {
+    if (ffn_keep != 0 && !ffn_keep_width_q4k_ok(ffn_keep)) {
+        return false;
+    }
     return remnant_serve_allowed(key_present, serve_ok);
 }
 

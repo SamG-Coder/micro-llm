@@ -23,6 +23,7 @@ struct GgufKv {
     bool serve_ok = false;
     bool has_vision_tensors = false;
     bool has_mtp_tensors = false;
+    std::vector<uint32_t> keep_channel_n;  // micro_llm.keep_channels.n
     std::string error;
     bool ok = false;
 };
@@ -37,6 +38,7 @@ bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m);
 bool write_gguf_kv_stub(const std::string& path, const std::string& architecture,
                         bool serve_ok_present, bool serve_ok,
                         uint32_t n_layers = kNLayers, uint32_t n_embd = kHiddenDim,
-                        uint32_t n_ff = kFfnIntermediate, std::string* err = nullptr);
+                        uint32_t n_ff = kFfnIntermediate, std::string* err = nullptr,
+                        const std::vector<uint32_t>* keep_channel_n = nullptr);
 
 }  // namespace micro_llm

@@ -13,11 +13,25 @@ ServeGate read_serve_gate(const std::string& gguf_path) {
     }
     g.key_present = meta.serve_ok_present;
     g.serve_ok = meta.serve_ok;
-    g.may_serve = remnant_may_serve(g.key_present, g.serve_ok);
+    g.ffn_width_ok = true;
+    if (!meta.keep_channel_n.empty()) {
+        for (uint32_t n : meta.keep_channel_n) {
+            if (!ffn_keep_width_q4k_ok(n)) {
+                g.ffn_width_ok = false;
+                break;
+            }
+        }
+    } else if (meta.n_ff != 0 && !ffn_keep_width_q4k_ok(meta.n_ff)) {
+        g.ffn_width_ok = false;
+    }
+    g.may_serve = remnant_may_serve(g.key_present, g.serve_ok) && g.ffn_width_ok;
     if (!g.key_present) {
         g.reason = "micro_llm.serve_ok missing; refuse serve";
     } else if (!g.serve_ok) {
         g.reason = "micro_llm.serve_ok=false (F16 host dump); refuse serve";
+    } else if (!g.ffn_width_ok) {
+        g.reason = "packed FFN intermediate is not a multiple of 256 (Q4_K superblock); "
+                   "13056 and 10496 are valid, 10445 is not";
     } else {
         g.reason = "serve_ok";
     }

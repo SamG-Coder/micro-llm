@@ -20,6 +20,8 @@ MIT.
   Do not fake `n_fired`.
 - Serve gate: GGUF KV `micro_llm.serve_ok`. `remnant_may_serve` is true only
   if the key is present and true. False = F16 host dump, refuse.
+  Packed FFN keep width must be a multiple of 256 (Q4_K). 13056 and 10496
+  are valid; 10445 is not.
 - Vocab bitset of original tokenizer IDs (248320)
 - Trace streamer control plane: pin CUDA + 16 Gated Attention blocks + KV +
   DeltaNet state + embed; two FFN scratch buffers; async prefetch of n+1;
@@ -125,7 +127,10 @@ error: Qwen 27B hybrid GGUF recognized, but llama.cpp is not linked. Rebuild: ..
 ```
 
 `remnant_may_serve` is true only if `micro_llm.serve_ok` is present and true.
-False means F16 host dump — refuse.
+False means F16 host dump — refuse. Packed FFN keep width
+(`micro_llm.keep_channels.n`, else `*.feed_forward_length`) must be a
+multiple of 256 (Q4_K superblock). 13056 (25% cap) and 10496 (40% recover
+floor) are valid; 10445 is not.
 
 ## Attach point
 

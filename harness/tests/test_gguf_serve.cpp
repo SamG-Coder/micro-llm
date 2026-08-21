@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 void test_gguf_serve_gate(TestContext& ctx) {
     using namespace micro_llm;
@@ -29,6 +30,40 @@ void test_gguf_serve_gate(TestContext& ctx) {
     CHECK(ctx, remnant_may_serve_file(ok_path));
     CHECK(ctx, !remnant_may_serve_file(false_path));
     CHECK(ctx, !remnant_may_serve_file(missing_path));
+
+    const std::string w13056 = "test_serve_ffn_13056.gguf";
+    const std::string w10496 = "test_serve_ffn_10496.gguf";
+    const std::string w10445 = "test_serve_ffn_10445.gguf";
+    const std::vector<uint32_t> keep_13056(kNLayers, kWeakKeepMin27B);
+    const std::vector<uint32_t> keep_10496(kNLayers, kWeakKeepMinRecover27B);
+    const std::vector<uint32_t> keep_10445(kNLayers, 10445u);
+    CHECK(ctx, write_gguf_kv_stub(w13056, "qwen35", true, true, kNLayers, kHiddenDim,
+                                 kFfnIntermediate, nullptr, &keep_13056));
+    CHECK(ctx, write_gguf_kv_stub(w10496, "qwen35", true, true, kNLayers, kHiddenDim,
+                                 kFfnIntermediate, nullptr, &keep_10496));
+    CHECK(ctx, write_gguf_kv_stub(w10445, "qwen35", true, true, kNLayers, kHiddenDim,
+                                 kFfnIntermediate, nullptr, &keep_10445));
+    CHECK(ctx, remnant_may_serve_file(w13056));
+    CHECK(ctx, remnant_may_serve_file(w10496));
+    CHECK(ctx, !remnant_may_serve_file(w10445));
+    const std::string nff13056 = "test_serve_nff_13056.gguf";
+    const std::string nff10445 = "test_serve_nff_10445.gguf";
+    CHECK(ctx, write_gguf_kv_stub(nff13056, "qwen35", true, true, kNLayers, kHiddenDim,
+                                 13056u));
+    CHECK(ctx, write_gguf_kv_stub(nff10445, "qwen35", true, true, kNLayers, kHiddenDim,
+                                 10445u));
+    CHECK(ctx, remnant_may_serve_file(nff13056));
+    CHECK(ctx, !remnant_may_serve_file(nff10445));
+    std::remove(nff13056.c_str());
+    std::remove(nff10445.c_str());
+    const ServeGate g10445 = read_serve_gate(w10445);
+    CHECK(ctx, g10445.key_present && g10445.serve_ok);
+    CHECK(ctx, !g10445.ffn_width_ok);
+    CHECK(ctx, !g10445.may_serve);
+    CHECK(ctx, g10445.reason.find("256") != std::string::npos);
+    std::remove(w13056.c_str());
+    std::remove(w10496.c_str());
+    std::remove(w10445.c_str());
 
     const ServeGate gfalse = read_serve_gate(false_path);
     CHECK(ctx, gfalse.key_present);

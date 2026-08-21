@@ -12,13 +12,15 @@ namespace micro_llm {
 struct ServeGate {
     bool key_present = false;
     bool serve_ok = false;
+    bool ffn_width_ok = true;
     bool may_serve = false;
     std::string reason;
 };
 
-// True only if key is present AND true.
-inline bool remnant_may_serve_gate(bool key_present, bool serve_ok) {
-    return remnant_may_serve(key_present, serve_ok);
+// True only if key is present AND true. ffn_keep=0 skips the Q4_K width check.
+inline bool remnant_may_serve_gate(bool key_present, bool serve_ok,
+                                  uint32_t ffn_keep = 0) {
+    return remnant_may_serve(key_present, serve_ok, ffn_keep);
 }
 
 // Read micro_llm.serve_ok from a GGUF. Missing file / missing key / false

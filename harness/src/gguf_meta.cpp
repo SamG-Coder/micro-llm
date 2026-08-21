@@ -264,8 +264,24 @@ bool read_gguf_meta(const std::string& path, GgufKv& out, std::string* err) {
             if (key == "tokenizer.ggml.tokens") {
                 out.n_vocab = static_cast<uint32_t>(n > UINT32_MAX ? UINT32_MAX : n);
             }
+            const bool keep_n = (key == kKvKeepChannelsN);
+            if (keep_n) {
+                out.keep_channel_n.clear();
+                out.keep_channel_n.reserve(static_cast<size_t>(n > 256 ? 256 : n));
+            }
             for (uint64_t j = 0; j < n; ++j) {
-                if (!skip_value(is, et)) {
+                if (keep_n && (static_cast<GgufType>(et) == GgufType::UINT32 ||
+                               static_cast<GgufType>(et) == GgufType::INT32)) {
+                    uint32_t v = 0;
+                    if (!read_u32(is, v)) {
+                        out.error = "truncated keep_channels.n";
+                        if (err) {
+                            *err = out.error;
+                        }
+                        return false;
+                    }
+                    out.keep_channel_n.push_back(v);
+                } else if (!skip_value(is, et)) {
                     out.error = "truncated GGUF array values";
                     if (err) {
                         *err = out.error;
@@ -331,7 +347,8 @@ bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m) {
 
 bool write_gguf_kv_stub(const std::string& path, const std::string& architecture,
                         bool serve_ok_present, bool serve_ok, uint32_t n_layers,
-                        uint32_t n_embd, uint32_t n_ff, std::string* err) {
+                        uint32_t n_embd, uint32_t n_ff, std::string* err,
+                        const std::vector<uint32_t>* keep_channel_n) {
     std::ofstream os(path, std::ios::binary);
     if (!os) {
         if (err) {
@@ -342,6 +359,9 @@ bool write_gguf_kv_stub(const std::string& path, const std::string& architecture
     const std::string prefix = architecture + ".";
     uint64_t n_kv = 4;  // arch + 3 dims
     if (serve_ok_present) {
+        n_kv += 1;
+    }
+    if (keep_channel_n && !keep_channel_n->empty()) {
         n_kv += 1;
     }
     os.write("GGUF", 4);
@@ -370,6 +390,15 @@ bool write_gguf_kv_stub(const std::string& path, const std::string& architecture
         write_u32(os, static_cast<uint32_t>(GgufType::BOOL));
         const unsigned char b = serve_ok ? 1 : 0;
         os.write(reinterpret_cast<const char*>(&b), 1);
+    }
+    if (keep_channel_n && !keep_channel_n->empty()) {
+        write_string(os, kKvKeepChannelsN);
+        write_u32(os, static_cast<uint32_t>(GgufType::ARRAY));
+        write_u32(os, static_cast<uint32_t>(GgufType::INT32));
+        write_u64(os, keep_channel_n->size());
+        for (uint32_t v : *keep_channel_n) {
+            write_u32(os, v);
+        }
     }
     if (!os) {
         if (err) {

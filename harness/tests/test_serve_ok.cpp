@@ -17,6 +17,19 @@ void test_serve_ok_refuses_unless_present_and_true(TestContext& ctx) {
     CHECK(ctx, !remnant_may_serve(false, false));
     CHECK(ctx, remnant_may_serve(true, true) == remnant_serve_allowed(true, true));
     CHECK(ctx, kKvServeOk[0] == 'm');
+
+    CHECK(ctx, kQ4KSuperblock == 256);
+    CHECK(ctx, kWeakKeepMin27B == 13056);
+    CHECK(ctx, kWeakKeepMinRecover27B == 10496);
+    CHECK(ctx, ffn_keep_width_q4k_ok(13056));
+    CHECK(ctx, ffn_keep_width_q4k_ok(10496));
+    CHECK(ctx, ffn_keep_width_q4k_ok(17408));
+    CHECK(ctx, !ffn_keep_width_q4k_ok(10445));
+    CHECK(ctx, !ffn_keep_width_q4k_ok(0));
+    CHECK(ctx, remnant_may_serve(true, true, 13056));
+    CHECK(ctx, remnant_may_serve(true, true, 10496));
+    CHECK(ctx, !remnant_may_serve(true, true, 10445));
+    CHECK(ctx, !remnant_may_serve(true, false, 13056));
 }
 
 void test_serve_stack_gate(TestContext& ctx) {
