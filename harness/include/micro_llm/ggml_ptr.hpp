@@ -8,6 +8,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 namespace micro_llm {
 
@@ -124,6 +126,35 @@ inline TensorDataKind classify_tensor_data_ptr(const void* data, const void* buf
 inline bool tensor_data_is_av_risk(TensorDataKind k) {
     return k == TensorDataKind::IntegerOffset || k == TensorDataKind::StaleHost ||
            k == TensorDataKind::None;
+}
+
+// The one A/B bind must leave this, not an alloc offset. MUL_MAT that
+// treats t->data as a raw pointer AVs on the offset (first-decode class).
+inline void* device_va_from_buffer(void* base, size_t off) {
+    return base ? static_cast<char*>(base) + off : nullptr;
+}
+
+// Print-only. Name the reserve 334/642 node: op + each src buft + whether
+// data is a host ptr or a ggml CUDA alloc offset. Not a split-ledger line.
+inline std::string format_reserve_av_node_line(const char* tag, const char* name, const char* op,
+                                              const char* buft, const char* data_kind,
+                                              uintptr_t data_u, const char* src0,
+                                              const char* src0_buft, const char* src0_data,
+                                              const char* src1, const char* src1_buft,
+                                              const char* src1_data) {
+    char buf[768];
+    std::snprintf(buf, sizeof(buf),
+                  "RESERVE_AV_NODE tag=%s name=%s op=%s buft=%s data=%s data_u=0x%llx "
+                  "src0=%s src0_buft=%s src0_data=%s src1=%s src1_buft=%s src1_data=%s",
+                  tag && tag[0] ? tag : "-", name && name[0] ? name : "-",
+                  op && op[0] ? op : "-", buft && buft[0] ? buft : "-",
+                  data_kind && data_kind[0] ? data_kind : "-",
+                  static_cast<unsigned long long>(data_u), src0 && src0[0] ? src0 : "none",
+                  src0_buft && src0_buft[0] ? src0_buft : "-",
+                  src0_data && src0_data[0] ? src0_data : "-", src1 && src1[0] ? src1 : "none",
+                  src1_buft && src1_buft[0] ? src1_buft : "-",
+                  src1_data && src1_data[0] ? src1_data : "-");
+    return buf;
 }
 
 // One A/B slot = one streamed layer’s gate+up+down. 254e10c: down

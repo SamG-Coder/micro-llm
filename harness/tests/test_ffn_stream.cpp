@@ -400,6 +400,23 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, tensor_data_is_av_risk(TensorDataKind::IntegerOffset));
     CHECK(ctx, tensor_data_is_av_risk(TensorDataKind::StaleHost));
     CHECK(ctx, !tensor_data_is_av_risk(TensorDataKind::InBuffer));
+    void* va = device_va_from_buffer(buf.data(), 64);
+    CHECK(ctx, va == buf.data() + 64);
+    CHECK(ctx, classify_tensor_data_ptr(va, buf.data(), buf.size()) == TensorDataKind::InBuffer);
+    CHECK(ctx, classify_tensor_data_ptr(reinterpret_cast<void*>(64), buf.data(), buf.size()) ==
+                   TensorDataKind::IntegerOffset);
+    const std::string av_node = format_reserve_av_node_line(
+        "before_reserve", "output.weight", "NONE", "CUDA0", "integer_offset", 64, "result",
+        "CUDA0", "integer_offset", "output.weight", "CUDA0", "in_buffer");
+    CHECK(ctx, av_node.find("RESERVE_AV_NODE tag=before_reserve") == 0);
+    CHECK(ctx, av_node.find("name=output.weight") != std::string::npos);
+    CHECK(ctx, av_node.find("op=NONE") != std::string::npos);
+    CHECK(ctx, av_node.find("data=integer_offset") != std::string::npos);
+    CHECK(ctx, av_node.find("src0=result") != std::string::npos);
+    CHECK(ctx, av_node.find("src0_buft=CUDA0") != std::string::npos);
+    CHECK(ctx, av_node.find("src0_data=integer_offset") != std::string::npos);
+    CHECK(ctx, av_node.find("src1=output.weight") != std::string::npos);
+    CHECK(ctx, av_node.find("src1_data=in_buffer") != std::string::npos);
     const std::string av =
         format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
                                  "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);
