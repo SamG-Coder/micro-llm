@@ -80,10 +80,23 @@ inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t 
     return nbytes != 0 && cap != 0 && off <= cap && nbytes <= cap - off;
 }
 
+// One A/B slot = one streamed layer’s gate+up+down. 254e10c: down
+// offset past 160. If 160 < aligned sum, the slot MUST grow. Extra
+// align slack so down is not flush against the cap.
+inline constexpr uint64_t ffn_slot_bytes_for_triplet(uint64_t gate, uint64_t up, uint64_t down,
+                                                     uint64_t align = kTensorAlign) {
+    if (align == 0) {
+        align = 1;
+    }
+    const uint64_t g = (gate + align - 1u) / align * align;
+    const uint64_t u = (up + align - 1u) / align * align;
+    const uint64_t d = (down + align - 1u) / align * align;
+    return g + u + d + align;
+}
+
 // Streamed layer → ggml slot. 63 → A, 62 → B. Other overflow stays CPU
 // (op_offload stream). 2 (extra park buffer) is illegal. -1 = parked.
-// All three Q4s (gate, up, down) must fit in the 160 MiB slot. Packing
-// norms/view_src first is what left ffn_down on CPU_Mapped (9a5f0df).
+// All three Q4s (gate, up, down) must fit in the slot they use.
 inline constexpr int kStreamSlotParked = -1;
 inline constexpr int kStreamSlotA = 0;
 inline constexpr int kStreamSlotB = 1;

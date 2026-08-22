@@ -60,13 +60,42 @@ inline constexpr VramLedger vram_ledger_slots_first(
     return v;
 }
 
+// After measure: slot_A/B are that layer’s bytes, not the 160 floor.
+// Graph reserve + CUDA0 13110 stay on the ledger BEFORE park. Do not
+// park overflow (57–63 stay streamed). extra_park stays 0.
+inline constexpr VramLedger vram_ledger_measured_slots(uint64_t slot_a, uint64_t slot_b) {
+    VramLedger v = vram_ledger_slots_first();
+    if (slot_a != 0) {
+        v.slot_a_bytes = slot_a;
+    }
+    if (slot_b != 0) {
+        v.slot_b_bytes = slot_b;
+    }
+    return v;
+}
+
+inline std::string format_ffn_slot_bytes_line(uint32_t layer, uint64_t gate, uint64_t up,
+                                              uint64_t down, uint64_t slot) {
+    char buf[384];
+    const uint64_t sum = gate + up + down;
+    std::snprintf(buf, sizeof(buf),
+                  "FFN_SLOT_BYTES layer=%u gate=%llu up=%llu down=%llu sum=%llu "
+                  "align=%u slot=%llu floor=%llu (slot==measured+align; grow if >160)",
+                  layer, static_cast<unsigned long long>(gate),
+                  static_cast<unsigned long long>(up), static_cast<unsigned long long>(down),
+                  static_cast<unsigned long long>(sum), kTensorAlign,
+                  static_cast<unsigned long long>(slot),
+                  static_cast<unsigned long long>(kStreamSlotBytes));
+    return buf;
+}
+
 inline std::string format_vram_ledger(const VramLedger& v) {
-    char buf[640];
+    char buf[704];
     std::snprintf(buf, sizeof(buf),
                   "VRAM_LEDGER ga_MiB=%.1f kv20k_MiB=%.1f scratch_MiB=%.1f "
                   "graph_reserve_MiB=%.1f slot_A_MiB=%.1f slot_B_MiB=%.1f "
                   "parked_ffn_MiB=%.1f used_MiB=%.1f free_to_15_2_MiB=%.1f "
-                  "park=%u stream=%u extra_park=0",
+                  "park=%u stream=%u extra_park=0 cuda0_bind_MiB=%.1f",
                   static_cast<double>(v.ga_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.kv20k_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.scratch_bytes) / (1024.0 * 1024.0),
@@ -76,7 +105,8 @@ inline std::string format_vram_ledger(const VramLedger& v) {
                   static_cast<double>(v.parked_ffn_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(vram_ledger_used(v)) / (1024.0 * 1024.0),
                   static_cast<double>(vram_ledger_free_to_hard(v)) / (1024.0 * 1024.0),
-                  v.n_parked_ffn, v.n_streamed_ffn);
+                  v.n_parked_ffn, v.n_streamed_ffn,
+                  static_cast<double>(kMeasured5080Cuda0BindMiB));
     return buf;
 }
 

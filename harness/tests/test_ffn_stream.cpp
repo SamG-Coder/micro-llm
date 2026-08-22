@@ -60,6 +60,30 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, led.slot_b_bytes == kStreamSlotBytes);
     CHECK(ctx, led.slot_a_bytes + led.slot_b_bytes + 20ull * 1024ull * 1024ull ==
                    kStreamSlotPairBudgetBytes);
+    const uint64_t over_g = 60ull * 1024ull * 1024ull;
+    const uint64_t over_u = 60ull * 1024ull * 1024ull;
+    const uint64_t over_d = 60ull * 1024ull * 1024ull;
+    const uint64_t grown = ffn_slot_bytes_for_triplet(over_g, over_u, over_d);
+    CHECK(ctx, grown > kStreamSlotBytes);
+    CHECK(ctx, grown == align_up(over_g) + align_up(over_u) + align_up(over_d) + kTensorAlign);
+    CHECK(ctx, ggml_slot_pack_ok(align_up(over_g) + align_up(over_u), over_d, grown));
+    CHECK(ctx, !ggml_slot_pack_ok(align_up(over_g) + align_up(over_u), over_d, kStreamSlotBytes));
+    const VramLedger sized = vram_ledger_measured_slots(grown, grown);
+    CHECK(ctx, sized.slot_a_bytes == grown);
+    CHECK(ctx, sized.slot_b_bytes == grown);
+    CHECK(ctx, sized.slot_a_bytes != kStreamSlotBytes);
+    CHECK(ctx, sized.n_parked_ffn == kMeasured5080Park57);
+    CHECK(ctx, sized.n_streamed_ffn == kMeasured5080Stream7);
+    CHECK(ctx, sized.graph_reserve_bytes == kHourGraphReserveBytes);
+    CHECK(ctx, hour_never_park_64(sized.n_parked_ffn));
+    const std::string sbytes = format_ffn_slot_bytes_line(63, over_g, over_u, over_d, grown);
+    CHECK(ctx, sbytes.find("FFN_SLOT_BYTES layer=63") == 0);
+    CHECK(ctx, sbytes.find("sum=") != std::string::npos);
+    const std::string sized_line = format_vram_ledger(sized);
+    CHECK(ctx, sized_line.find("slot_A_MiB=160.0") == std::string::npos);
+    CHECK(ctx, sized_line.find("cuda0_bind_MiB=13110.0") != std::string::npos);
+    CHECK(ctx, sized_line.find("extra_park=0") != std::string::npos);
+    CHECK(ctx, sized_line.find("graph_reserve_MiB=") != std::string::npos);
     CHECK(ctx, led.kv20k_bytes == kHourKvReserveBytes);
     CHECK(ctx, led.scratch_bytes == kCudaScratchBytes);
     CHECK(ctx, led.graph_reserve_bytes == kHourGraphReserveBytes);
@@ -73,6 +97,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, vline.find("slot_B_MiB=160.0") != std::string::npos);
     CHECK(ctx, vline.find("graph_reserve_MiB=") != std::string::npos);
     CHECK(ctx, vline.find("extra_park=0") != std::string::npos);
+    CHECK(ctx, vline.find("cuda0_bind_MiB=13110.0") != std::string::npos);
     CHECK(ctx, vline.find("kv20k_MiB=") != std::string::npos);
     CHECK(ctx, vline.find("free_to_15_2_MiB=") != std::string::npos);
 
