@@ -86,11 +86,31 @@ export function makeStreakLine(resolution) {
   return line;
 }
 
+let _dot = null;
+
+// Soft circle so Points read as sparks, not GPU squares.
+export function pointSpriteTexture() {
+  if (_dot) return _dot;
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const ctx = c.getContext("2d");
+  const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+  g.addColorStop(0, "rgba(255,255,255,1)");
+  g.addColorStop(0.4, "rgba(255,255,255,0.82)");
+  g.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  _dot = new THREE.CanvasTexture(c);
+  _dot.colorSpace = THREE.SRGBColorSpace;
+  return _dot;
+}
+
 export function makeHeadPoint() {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(3), 3));
   const mat = new THREE.PointsMaterial({
     color: 0xd6e0ec,
+    map: pointSpriteTexture(),
     size: 0.15,
     transparent: true,
     opacity: 0,

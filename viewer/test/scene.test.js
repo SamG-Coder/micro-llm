@@ -21,7 +21,9 @@ describe("space look: points and streaks, not a bin grid", () => {
     assert.match(scene, /THREE\.LineSegments/);
     assert.match(glyphs, /Line2/);
     assert.match(glyphs, /LineGeometry/);
+    assert.match(glyphs, /pointSpriteTexture/);
     assert.match(scene, /ffnVolumePos/);
+    assert.match(scene, /pointSpriteTexture/);
   });
 
   it("keeps the sample ring at ~48ms", () => {

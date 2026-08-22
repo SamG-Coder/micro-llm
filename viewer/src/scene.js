@@ -10,7 +10,7 @@ import {
   rarityGlow,
   vocabBinIndex,
 } from "./constants.js";
-import { glyphScale, makeGlyphSprite, makeHeadPoint, makeStreakLine } from "./glyphs.js";
+import { glyphScale, makeGlyphSprite, makeHeadPoint, makeStreakLine, pointSpriteTexture } from "./glyphs.js";
 import { packSpikeBit } from "./ring.js";
 
 const FFN_COUNT = N_LAYERS * FFN_BINS_PER_LAYER;
@@ -91,6 +91,7 @@ function addStarField(scene) {
     geo,
     new THREE.PointsMaterial({
       size: 0.055,
+      map: pointSpriteTexture(),
       vertexColors: true,
       transparent: true,
       opacity: 0.85,
@@ -111,6 +112,7 @@ function makePointCloud(count, size) {
     geo,
     new THREE.PointsMaterial({
       size,
+      map: pointSpriteTexture(),
       vertexColors: true,
       transparent: true,
       opacity: 1,
@@ -203,7 +205,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   scene.add(packs.pts);
   scene.add(packStreaks.lines);
 
-  const spine = makePointCloud(N_SPINE, 0.22);
+  const spine = makePointCloud(N_SPINE, 0.16);
   const spineSpark = new Float32Array(N_SPINE);
   const spineHeat = new Float32Array(N_SPINE);
   spineHeat.fill(0.42);
