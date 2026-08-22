@@ -20,8 +20,9 @@ int32_t clamp_hybrid_n_gpu_layers(int32_t n) {
 uint32_t hybrid_ffn_park_layers() { return vram_ledger_slots_first().n_parked_ffn; }
 
 std::vector<std::string> hybrid_cpu_tensor_regexes() {
-    // Only MTP + lm_head stay host. FFN + DeltaNet on CUDA collapses the
-    // 340-split graph (5080: DeltaNet-CPU + 7 streamed FFN-CPU = 0.52 tok/s).
+    // Only MTP + lm_head stay host. Do NOT send 57–63 FFN to CUDA_Host
+    // (zero-copy GEMM, 340 splits, 0.96 tok/s). Overflow stays CPU so
+    // op_offload can H2D into A/B and GEMM from that CUDA buffer.
     return {
         "nextn",
         "shared_head",
@@ -30,14 +31,19 @@ std::vector<std::string> hybrid_cpu_tensor_regexes() {
 }
 
 std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park) {
-    (void)n_park;
+    if (n_park > kMaxParkedFfnLayers) {
+        n_park = kMaxParkedFfnLayers;
+    }
     std::vector<std::string> out;
-    // ALL FFN on CUDA. Partial park (0..n) left streamed layers on host and
-    // split the graph (5080: 0.96 tok/s). A static graph cannot share two
-    // slots across N Q4 tensors; leftover after slots+KV parks all 64.
-    out.push_back("blk\\.[0-9]+\\.ffn_gate");
-    out.push_back("blk\\.[0-9]+\\.ffn_up");
-    out.push_back("blk\\.[0-9]+\\.ffn_down");
+    // Parked FFN only (layers 0..n_park-1). A catch-all blk.[0-9]+.ffn_*
+    // parks 57–63 too (never-64, CUDA0 14360, real_h2d=0). One pattern
+    // per parked layer so blk.5 does not swallow blk.57.
+    for (uint32_t layer = 0; layer < n_park; ++layer) {
+        const std::string n = std::to_string(layer);
+        out.push_back("blk\\." + n + "\\.ffn_gate");
+        out.push_back("blk\\." + n + "\\.ffn_up");
+        out.push_back("blk\\." + n + "\\.ffn_down");
+    }
     // DeltaNet on CUDA. Leaving it on host splits every layer against parked FFN.
     out.push_back("blk\\.[0-9]+\\.ssm_");
     out.push_back("blk\\.[0-9]+\\.attn_qkv");
@@ -59,12 +65,17 @@ uint64_t pinned_ga_kv_bytes() { return kPinnedGaWeightBytes + kHourKvReserveByte
 uint64_t streamed_ffn_workspace_bytes() { return kStreamWorkspaceBytes; }
 
 std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes) {
-    char buf[320];
+    if (n_park > kMaxParkedFfnLayers) {
+        n_park = kMaxParkedFfnLayers;
+    }
+    const uint32_t n_stream = ffn_stream_layers(n_park);
+    char buf[384];
     std::snprintf(buf, sizeof(buf),
-                  "ffn_cuda_park n=%u bytes=%llu stream_slots=%u stream_bytes=%u "
-                  "ngl=0 kv20k_bytes=%llu ggml_rebind_q4=%d",
-                  n_park, static_cast<unsigned long long>(bytes), kNStreamSlots,
-                  kStreamWorkspaceBytes, static_cast<unsigned long long>(kHourKvReserveBytes),
+                  "ffn_cuda_park n=%u bytes=%llu stream=%u stream_slots=%u stream_bytes=%llu "
+                  "ngl=0 kv20k_bytes=%llu ggml_rebind_q4=%d never_64=1",
+                  n_park, static_cast<unsigned long long>(bytes), n_stream, kNStreamSlots,
+                  static_cast<unsigned long long>(kStreamWorkspaceBytes),
+                  static_cast<unsigned long long>(kHourKvReserveBytes),
                   ggml_can_rebind_q4_midgraph() ? 1 : 0);
     return buf;
 }
@@ -77,10 +88,12 @@ std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked) {
 }
 
 std::string format_ffn_slot_bind_line(int slot, uint64_t bytes, bool real_h2d) {
-    char buf[160];
+    char buf[192];
     std::snprintf(buf, sizeof(buf),
-                  "ffn_slot_bind slot=%d bytes=%llu real_h2d=%d (cudaMalloc_alone=0)",
-                  slot, static_cast<unsigned long long>(bytes), real_h2d ? 1 : 0);
+                  "ffn_slot_bind slot=%d bytes=%llu layer_MiB=%.1f real_h2d=%d "
+                  "(cudaMalloc_alone=0 need_full_layer=1)",
+                  slot, static_cast<unsigned long long>(bytes),
+                  static_cast<double>(bytes) / (1024.0 * 1024.0), real_h2d ? 1 : 0);
     return buf;
 }
 

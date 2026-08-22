@@ -12,7 +12,7 @@ void test_perf_clocks(TestContext& ctx) {
 
     PerfClocks clocks;
     clocks.begin_session();
-    clocks.set_plan(64, 0, true);
+    clocks.set_plan(57, 7, true);
     clocks.set_trace_off(true);
     clocks.set_ffn_gemm(192, 0);
     clocks.set_prefill(1.25, 41);
@@ -33,8 +33,8 @@ void test_perf_clocks(TestContext& ctx) {
 
     const PerfSnapshot s = clocks.snapshot();
     CHECK(ctx, s.n_tokens == 1);
-    CHECK(ctx, s.n_parked_ffn == 64);
-    CHECK(ctx, s.n_streamed_ffn == 0);
+    CHECK(ctx, s.n_parked_ffn == 57);
+    CHECK(ctx, s.n_streamed_ffn == 7);
     CHECK(ctx, s.h2d_bytes_per_tok == 150ull * 1024ull * 1024ull);
     CHECK(ctx, s.d2h_bytes_per_tok == kFloorBitsetBytes);
     CHECK(ctx, s.d2h_bytes_per_tok < 200000);  // ~140KB, not 17408*4*64
@@ -61,6 +61,7 @@ void test_perf_clocks(TestContext& ctx) {
     CHECK(ctx, bl.find("cuda0_compute_MiB=") != std::string::npos);
     CHECK(ctx, bl.find("nvidia_used_MiB=") != std::string::npos);
     CHECK(ctx, bl.find("h2d_B/tok=") != std::string::npos);
+    CHECK(ctx, bl.find("real_h2d=1") != std::string::npos);
     CHECK(ctx, bl.find("kv20k_MiB=") != std::string::npos);
     CHECK(ctx, !bench_swap_7780(3.5));
     CHECK(ctx, bench_swap_7780(3.56));

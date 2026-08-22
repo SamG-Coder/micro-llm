@@ -61,8 +61,11 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::vector<float> hout(kHiddenDim, 0.1f);
 
     const VramLedger ledger = vram_ledger_slots_first();
-    const uint32_t n_park =
+    uint32_t n_park =
         cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ledger.n_parked_ffn;
+    if (n_park > kMaxParkedFfnLayers) {
+        n_park = kMaxParkedFfnLayers;
+    }
     streamer.set_n_parked_ffn(n_park);
     streamer.ensure_slots();
     PerfClocks clocks;
@@ -70,8 +73,8 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
     clocks.set_trace_off(!cfg.trace_hooks);
     clocks.set_ffn_gemm(kFfnGemmPerToken, 0);
-    const SplitLedger sl = split_ledger_trace_off_cuda_ffn();
-    clocks.set_split_ledger(0, sl.buffer_type, sl.backend, sl.op);
+    const SplitLedger sl = split_ledger_trace_off_park_stream(ffn_stream_layers(n_park), 0);
+    clocks.set_split_ledger(0, sl.placement_buffer, sl.backend_transition, sl.unsupported_op);
     streamer.set_perf(&clocks);
     std::fprintf(stderr, "%s\n", format_vram_ledger(ledger).c_str());
     std::fprintf(stderr, "%s\n",
@@ -83,6 +86,15 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::fprintf(stderr, "%s\n", format_pcie_bound_line(ffn_stream_layers(n_park)).c_str());
 
     streamer.begin_session();
+    const uint8_t q4_stub[64] = {1, 2, 3, 4};
+    for (uint32_t layer = n_park; layer < kNLayers; ++layer) {
+        streamer.set_stream_host(layer, q4_stub, sizeof(q4_stub));
+    }
+    streamer.h2d_overflow_q4();
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_slot_bind_line(0, ledger.slot_a_bytes, streamer.slot_bound(0)).c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_slot_bind_line(1, ledger.slot_b_bytes, streamer.slot_bound(1)).c_str());
     clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
     clocks.set_prefill(0.0, 0);
     clocks.begin_decode_wall();

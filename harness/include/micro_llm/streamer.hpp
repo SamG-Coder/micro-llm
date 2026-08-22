@@ -3,12 +3,11 @@
 // Trace-path streamer. Not a 27B engine.
 //
 // Pin: CUDA + 16 Gated Attention QKVO + KV (20k reserved) + embed.
-// Park as many FFN layers as fit under 14GB AFTER KV+two stream slots.
-// ggml cannot rebind a mapped Q4 tensor mid-graph (ggml_can_rebind_q4_midgraph
-// is false). Private H2D slots do not feed ggml CUDA matmul — 5080 measured
-// 340 splits, h2d_B=0, 0.52 tok/s with park=57 stream=7. Measured alternative:
-// park all 64 FFN + DeltaNet at load so the graph is one backend. Two stream
-// slots stay reserved in the card math. ngl is not the pin (not 16, not 99).
+// Allocate slot A/B FIRST, then park leftover FFN under 14GB after KV@20k
+// (layers 0–56). Stream 57–63: H2D into A/B, GEMM from that CUDA buffer.
+// Park 64 is illegal. ggml cannot rebind N Q4 tensors onto two mid-graph
+// slots (ggml_can_rebind_q4_midgraph is false). Unused cudaMalloc is not
+// a bind — bind_q4_into_slot with host Q4 is. ngl is not the pin.
 // Do NOT pin lm_head next to embed; lm_head only at logits.
 // No mid-session shrink.
 
@@ -40,7 +39,7 @@ enum class FfnComputeKind : uint8_t {
 
 struct StreamerConfig {
     static constexpr uint32_t kPackedAlign = kTensorAlign;
-    size_t ffn_scratch_bytes = static_cast<size_t>(kQ4FfnLayerBytesMeasured5080);
+    size_t ffn_scratch_bytes = static_cast<size_t>(kStreamSlotBytes);
     uint32_t n_layers = kNLayers;
     uint32_t n_parked_ffn = 0;  // layers [0, n) stay on CUDA. Hour sets this.
     uint32_t n_stream_slots = kNStreamSlots;
@@ -104,12 +103,17 @@ public:
     uint64_t h2d_bytes() const { return h2d_bytes_; }
     void set_log_cuda_ffn(bool on) { cfg_.log_cuda_ffn = on; }
 
-    // Slot A/B first. cudaMalloc alone is NOT a bind. bind_q4_into_slot is.
+    // Slot A/B first. Each slot is one full Q4 layer (~160 MiB).
+    // cudaMalloc alone is NOT a bind. A bind that does not fit is not a bind.
     bool ensure_slots();
     bool bind_q4_into_slot(int slot, const void* host_q4, size_t bytes);
+    bool bind_layer_into_slot(int slot, uint32_t layer);
     bool slot_allocated() const { return slots_allocated_; }
     bool slot_bound(int slot) const {
         return slot >= 0 && slot < kNScratch && slot_bound_[static_cast<size_t>(slot)];
+    }
+    bool slot_real_h2d(int slot) const {
+        return slot >= 0 && slot < kNScratch && slot_real_h2d_[static_cast<size_t>(slot)];
     }
     uint64_t slot_bind_bytes() const { return slot_bind_bytes_; }
     uint64_t slot_bytes() const { return 2u * cfg_.ffn_scratch_bytes; }
@@ -118,7 +122,17 @@ public:
     const uint8_t* scratch(int i) const { return scratch_[static_cast<size_t>(i)].data(); }
 
     // Register host weight bytes for a streamed layer (pinned mmap / GGUF).
+    // part 0/1/2 = gate/up/down. A slot holds all three (~160 MiB).
     void set_stream_host(uint32_t layer, const void* ptr, size_t bytes);
+    void set_stream_host_part(uint32_t layer, int part, const void* ptr, size_t bytes);
+    const void* stream_host_ptr(uint32_t layer) const {
+        return layer < kNLayers ? host_ptr_[layer] : nullptr;
+    }
+    size_t stream_host_bytes(uint32_t layer) const {
+        return layer < kNLayers ? host_bytes_[layer] : 0;
+    }
+    // H2D every registered overflow layer into A/B (ping-pong). Real bind.
+    uint64_t h2d_overflow_q4();
     FfnComputeKind last_bind_kind() const { return last_bind_kind_; }
     bool last_bind_was_cuda() const { return last_bind_kind_ != FfnComputeKind::HostGgml; }
 
@@ -139,6 +153,7 @@ private:
     bool ensure_scratch();
     void try_lock_host_pages();
     bool slot_copy_h2d(int slot, uint32_t layer);
+    bool copy_into_slot(int slot, const void* host, size_t bytes, size_t offset);
     void release_cuda_slots();
 
     StreamerConfig cfg_;
@@ -147,6 +162,8 @@ private:
     std::array<uint32_t, 2> slot_layer_{{~0u, ~0u}};
     std::array<const void*, kNLayers> host_ptr_{};
     std::array<size_t, kNLayers> host_bytes_{};
+    std::array<std::array<const void*, 3>, kNLayers> host_part_ptr_{};
+    std::array<std::array<size_t, 3>, kNLayers> host_part_bytes_{};
     int compute_buf_ = 0;
     int prefetch_buf_ = 1;
     uint32_t compute_layer_ = ~0u;
@@ -160,6 +177,7 @@ private:
     bool cuda_slots_ = false;
     bool slots_allocated_ = false;
     std::array<bool, 2> slot_bound_{{false, false}};
+    std::array<bool, 2> slot_real_h2d_{{false, false}};
     uint64_t slot_bind_bytes_ = 0;
     uint64_t cuda_bind_count_ = 0;
     uint64_t host_bind_count_ = 0;

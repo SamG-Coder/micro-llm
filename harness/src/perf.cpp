@@ -305,10 +305,9 @@ std::string format_pcie_bound_line(uint32_t n_stream) {
     char buf[448];
     if (n_stream == 0) {
         std::snprintf(buf, sizeof(buf),
-                      "PCIE B/tok=0 n_stream=0 gbs=%.1f. 20 tok/s is CUDA Q4 compute "
-                      "(all FFN resident), not a PCIe bound. ggml_rebind_q4=0 so we "
-                      "do not H2D-rebind mid-graph. 5080 stub tok/s=%.2f splits=%u "
-                      "is not the speed path.",
+                      "PCIE B/tok=0 n_stream=0 gbs=%.1f. park=64/stream=0 is illegal. "
+                      "ggml_rebind_q4=0. 5080 stub tok/s=%.2f splits=%u is not the "
+                      "speed path.",
                       static_cast<double>(kPcie5PracticalGBs),
                       static_cast<double>(kMeasured5080TokPerSecCbOff),
                       kMeasured5080GraphSplits);
@@ -317,7 +316,8 @@ std::string format_pcie_bound_line(uint32_t n_stream) {
         std::snprintf(buf, sizeof(buf),
                       "PCIE B/tok=%llu n_stream=%u layer_MiB=%.1f gbs=%.1f "
                       "pcie_ms/tok=%.2f pcie_tok/s=%.1f (host ggml of those layers "
-                      "is not the 20+ path; ggml_rebind_q4=0)",
+                      "must H2D into A/B and GEMM from CUDA, not CUDA_Host; "
+                      "ggml_rebind_q4=0)",
                       static_cast<unsigned long long>(bpt), n_stream,
                       static_cast<double>(kQ4FfnLayerBytesMeasured5080) / (1024.0 * 1024.0),
                       static_cast<double>(kPcie5PracticalGBs), ms, tok);

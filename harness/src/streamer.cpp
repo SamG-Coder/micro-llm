@@ -16,6 +16,10 @@ namespace micro_llm {
 TraceStreamer::TraceStreamer(StreamerConfig cfg) : cfg_(cfg) {
     host_ptr_.fill(nullptr);
     host_bytes_.fill(0);
+    for (uint32_t i = 0; i < kNLayers; ++i) {
+        host_part_ptr_[i].fill(nullptr);
+        host_part_bytes_[i].fill(0);
+    }
     if (cfg_.n_stream_slots < 1) {
         cfg_.n_stream_slots = 1;
     }
@@ -54,11 +58,51 @@ uint32_t TraceStreamer::next_streamed_layer(uint32_t layer) const {
 }
 
 void TraceStreamer::set_stream_host(uint32_t layer, const void* ptr, size_t bytes) {
-    if (layer >= kNLayers) {
+    set_stream_host_part(layer, 0, ptr, bytes);
+}
+
+void TraceStreamer::set_stream_host_part(uint32_t layer, int part, const void* ptr, size_t bytes) {
+    if (layer >= kNLayers || part < 0 || part > 2 || !ptr || bytes == 0) {
         return;
     }
-    host_ptr_[layer] = ptr;
-    host_bytes_[layer] = bytes;
+    host_part_ptr_[layer][static_cast<size_t>(part)] = ptr;
+    host_part_bytes_[layer][static_cast<size_t>(part)] = bytes;
+    if (part == 0) {
+        host_ptr_[layer] = ptr;
+        host_bytes_[layer] = bytes;
+    } else {
+        host_bytes_[layer] += bytes;
+    }
+}
+
+uint64_t TraceStreamer::h2d_overflow_q4() {
+    // N into A, N+1 into B. Do not walk all seven — that leaves only the
+    // last pair in the slots. A bind that does not fit is not a bind.
+    uint64_t n = 0;
+    uint32_t first = cfg_.n_parked_ffn;
+    while (first < cfg_.n_layers && first < kNLayers && ffn_is_parked(first)) {
+        ++first;
+    }
+    if (first >= cfg_.n_layers || first >= kNLayers) {
+        return 0;
+    }
+    if (bind_layer_into_slot(0, first)) {
+        n += host_bytes_[first];
+    }
+    const uint32_t next = next_streamed_layer(first);
+    if (next != ~0u && bind_layer_into_slot(1, next)) {
+        n += host_bytes_[next];
+        ++overlap_prefetch_count_;
+        if (perf_) {
+            perf_->add_overlap_prefetch();
+        }
+        prefetch_layer_ = next;
+        prefetch_outstanding_ = true;
+        prefetch_buf_ = 1;
+        compute_buf_ = 0;
+        compute_layer_ = first;
+    }
+    return n;
 }
 
 bool TraceStreamer::ensure_scratch() {
@@ -100,42 +144,109 @@ bool TraceStreamer::ensure_slots() {
     return slots_allocated_;
 }
 
+bool TraceStreamer::copy_into_slot(int slot, const void* host, size_t bytes, size_t offset) {
+    if (slot < 0 || slot >= kNScratch || !host || bytes == 0) {
+        return false;
+    }
+    if (offset + bytes > cfg_.ffn_scratch_bytes) {
+        return false;
+    }
+    ensure_slots();
+#if defined(MICRO_LLM_HAS_CUDA)
+    if (d_slot_[static_cast<size_t>(slot)]) {
+        unsigned char* dst = static_cast<unsigned char*>(d_slot_[static_cast<size_t>(slot)]) + offset;
+        const cudaError_t rc = cudaMemcpy(dst, host, bytes, cudaMemcpyHostToDevice);
+        return rc == cudaSuccess;
+    }
+#endif
+    auto& dst = scratch_[static_cast<size_t>(slot)];
+    if (dst.size() < offset + bytes) {
+        return false;
+    }
+    std::memcpy(dst.data() + offset, host, bytes);
+    return true;
+}
+
 bool TraceStreamer::bind_q4_into_slot(int slot, const void* host_q4, size_t bytes) {
     if (slot < 0 || slot >= kNScratch || !host_q4 || bytes == 0) {
         return false;
     }
+    // Truncating a 160 MiB layer into an 80 MiB slot is not a bind.
+    if (bytes > cfg_.ffn_scratch_bytes) {
+        return false;
+    }
     ensure_slots();
-    const size_t copy_n = bytes < cfg_.ffn_scratch_bytes ? bytes : cfg_.ffn_scratch_bytes;
     if (perf_) {
         perf_->begin_span(PerfSpan::Pcie);
     }
-#if defined(MICRO_LLM_HAS_CUDA)
-    if (d_slot_[static_cast<size_t>(slot)]) {
-        const cudaError_t rc =
-            cudaMemcpy(d_slot_[static_cast<size_t>(slot)], host_q4, copy_n, cudaMemcpyHostToDevice);
-        if (rc != cudaSuccess) {
-            if (perf_) {
-                perf_->end_span(PerfSpan::Pcie);
-            }
-            return false;
+    if (!copy_into_slot(slot, host_q4, bytes, 0)) {
+        if (perf_) {
+            perf_->end_span(PerfSpan::Pcie);
         }
-    } else
-#endif
-    {
-        auto& dst = scratch_[static_cast<size_t>(slot)];
-        if (dst.size() < copy_n) {
-            if (perf_) {
-                perf_->end_span(PerfSpan::Pcie);
-            }
-            return false;
-        }
-        std::memcpy(dst.data(), host_q4, copy_n);
+        return false;
     }
-    h2d_bytes_ += copy_n;
-    slot_bind_bytes_ += copy_n;
+    h2d_bytes_ += bytes;
+    slot_bind_bytes_ += bytes;
     slot_bound_[static_cast<size_t>(slot)] = true;
+    slot_real_h2d_[static_cast<size_t>(slot)] = true;
     if (perf_) {
-        perf_->add_h2d(copy_n);
+        perf_->add_h2d(bytes);
+        perf_->end_span(PerfSpan::Pcie);
+        perf_->add_cuda_ffn_bind();
+    }
+    ++cuda_bind_count_;
+    last_bind_kind_ = FfnComputeKind::StreamCuda;
+    return true;
+}
+
+bool TraceStreamer::bind_layer_into_slot(int slot, uint32_t layer) {
+    if (slot < 0 || slot >= kNScratch || layer >= kNLayers) {
+        return false;
+    }
+    ensure_slots();
+    size_t off = 0;
+    bool any = false;
+    if (perf_) {
+        perf_->begin_span(PerfSpan::Pcie);
+    }
+    for (int p = 0; p < 3; ++p) {
+        const void* ptr = host_part_ptr_[layer][static_cast<size_t>(p)];
+        const size_t n = host_part_bytes_[layer][static_cast<size_t>(p)];
+        if (!ptr || n == 0) {
+            continue;
+        }
+        if (!copy_into_slot(slot, ptr, n, off)) {
+            if (perf_) {
+                perf_->end_span(PerfSpan::Pcie);
+            }
+            return false;
+        }
+        off += n;
+        any = true;
+    }
+    if (!any && host_ptr_[layer] && host_bytes_[layer] != 0) {
+        if (!copy_into_slot(slot, host_ptr_[layer], host_bytes_[layer], 0)) {
+            if (perf_) {
+                perf_->end_span(PerfSpan::Pcie);
+            }
+            return false;
+        }
+        off = host_bytes_[layer];
+        any = true;
+    }
+    if (!any) {
+        if (perf_) {
+            perf_->end_span(PerfSpan::Pcie);
+        }
+        return false;
+    }
+    h2d_bytes_ += off;
+    slot_bind_bytes_ += off;
+    slot_bound_[static_cast<size_t>(slot)] = true;
+    slot_real_h2d_[static_cast<size_t>(slot)] = true;
+    slot_layer_[static_cast<size_t>(slot)] = layer;
+    if (perf_) {
+        perf_->add_h2d(off);
         perf_->end_span(PerfSpan::Pcie);
         perf_->add_cuda_ffn_bind();
     }
@@ -196,8 +307,14 @@ bool TraceStreamer::slot_copy_h2d(int slot, uint32_t layer) {
     if (slot < 0 || slot >= kNScratch || layer >= cfg_.n_layers) {
         return false;
     }
+    // Full layer (gate+up+down) into this slot. Truncation is not a copy.
+    if (bind_layer_into_slot(slot, layer)) {
+        return true;
+    }
     const size_t n = host_bytes_[layer] != 0 ? host_bytes_[layer] : cfg_.ffn_scratch_bytes;
-    const size_t copy_n = n < cfg_.ffn_scratch_bytes ? n : cfg_.ffn_scratch_bytes;
+    if (n > cfg_.ffn_scratch_bytes) {
+        return false;
+    }
     const void* src = host_ptr_[layer];
     if (!src) {
         src = scratch_[static_cast<size_t>(slot)].data();
@@ -208,24 +325,21 @@ bool TraceStreamer::slot_copy_h2d(int slot, uint32_t layer) {
     if (perf_) {
         perf_->begin_span(PerfSpan::Pcie);
     }
-#if defined(MICRO_LLM_HAS_CUDA)
-    if (d_slot_[static_cast<size_t>(slot)] && src && copy_n > 0) {
-        // Async H2D. Overlap only if host pages are pinned.
-        const cudaError_t rc =
-            cudaMemcpyAsync(d_slot_[static_cast<size_t>(slot)], src, copy_n,
-                            cudaMemcpyHostToDevice, static_cast<cudaStream_t>(0));
-        if (rc != cudaSuccess) {
-            cudaMemcpy(d_slot_[static_cast<size_t>(slot)], src, copy_n, cudaMemcpyHostToDevice);
+    if (src && n > 0 && copy_into_slot(slot, src, n, 0)) {
+        h2d_bytes_ += n;
+        if (perf_) {
+            perf_->add_h2d(n);
         }
+        slot_layer_[static_cast<size_t>(slot)] = layer;
+        if (perf_) {
+            perf_->end_span(PerfSpan::Pcie);
+        }
+        return true;
     }
-#endif
-    h2d_bytes_ += copy_n;
     if (perf_) {
-        perf_->add_h2d(copy_n);
         perf_->end_span(PerfSpan::Pcie);
     }
-    slot_layer_[static_cast<size_t>(slot)] = layer;
-    return true;
+    return false;
 }
 
 void TraceStreamer::begin_session() {
@@ -245,6 +359,8 @@ void TraceStreamer::begin_session() {
     slot_bind_bytes_ = 0;
     slot_bound_[0] = false;
     slot_bound_[1] = false;
+    slot_real_h2d_[0] = false;
+    slot_real_h2d_[1] = false;
     last_bind_kind_ = FfnComputeKind::HostGgml;
     slot_layer_[0] = ~0u;
     slot_layer_[1] = ~0u;

@@ -66,8 +66,10 @@ inline const float* resolve_f32_in_buffer(void* base, size_t buf_size, void* dat
 }
 
 // ggml cannot rebind a loaded Q4 tensor onto a different CUDA buffer mid-graph
-// (the sched pins buffer type at graph build). bind_ffn into private slots
-// does not change those assignments — 5080: 340 splits, h2d_B=0, 0.52 tok/s.
+// (the sched pins buffer type at graph build). Private cudaMalloc slots that
+// the sched never sees are not a bind (5080: h2d_B=0). Load-time copy into
+// the CUDA buffer the tensor uses, or op_offload H2D of CPU Q4 into A/B,
+// is the supported path. Park-all-64 is illegal.
 inline constexpr bool ggml_can_rebind_q4_midgraph() { return false; }
 
 }  // namespace micro_llm

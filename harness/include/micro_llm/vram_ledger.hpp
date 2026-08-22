@@ -1,8 +1,9 @@
 #pragma once
 
 // Milestone 1 card + split + GEMM ledgers. Slots A/B are reserved FIRST,
-// then leftover under 14 GiB is parked FFN. KV 20k is reserved before
-// sitting at 14. Park weights, not KV. Compile-tested without llama.cpp.
+// then leftover under 14 GiB after KV@20k parks FFN 0–56 only. Layers
+// 57–63 stream through A/B. Park 64 is illegal. Park weights, not KV.
+// Compile-tested without llama.cpp.
 
 #include "micro_llm/perf.hpp"
 #include "micro_llm/types.hpp"
@@ -40,15 +41,15 @@ inline constexpr VramLedger vram_ledger_slots_first(
     uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080,
     uint64_t soft = kHourCardSoftBytes) {
     VramLedger v;
-    v.slot_a_bytes = layer_bytes;
-    v.slot_b_bytes = layer_bytes;
+    v.slot_a_bytes = kStreamSlotBytes;  // full layer ~160 MiB, not 80
+    v.slot_b_bytes = kStreamSlotBytes;
     const uint64_t fixed = v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.slot_a_bytes +
                            v.slot_b_bytes;
     uint32_t n_park = 0;
     if (fixed < soft && layer_bytes != 0) {
         n_park = static_cast<uint32_t>((soft - fixed) / layer_bytes);
         if (n_park > kMaxParkedFfnLayers) {
-            n_park = kMaxParkedFfnLayers;
+            n_park = kMaxParkedFfnLayers;  // 57. never 64.
         }
     }
     v.n_parked_ffn = n_park;
@@ -75,39 +76,84 @@ inline std::string format_vram_ledger(const VramLedger& v) {
     return buf;
 }
 
-// Graph-split causes. callback/hooks MUST be 0 when cb_eval is nullptr.
+// Graph-split causes. All six print every run. hook/callback MUST be 0
+// when cb_eval is nullptr (--trace-off). CUDA_Host_to_CUDA must be 0:
+// streamed 57–63 are CPU-resident + H2D into A/B, not CUDA_Host.
 struct SplitLedger {
-    uint32_t callback_hooks = 0;
-    uint32_t buffer_type = 0;
-    uint32_t backend = 0;
-    uint32_t op = 0;
+    uint32_t callback_hooks = 0;       // hook/callback
+    uint32_t cuda_host_to_cuda = 0;    // CUDA_Host_to_CUDA
+    uint32_t backend_transition = 0;   // backend
+    uint32_t unsupported_op = 0;
+    uint32_t placement_buffer = 0;     // placement/buffer
+    uint32_t other = 0;
     bool trace_off = true;
 };
 
 inline constexpr uint32_t split_ledger_total(const SplitLedger& s) {
     const uint32_t hooks = s.trace_off ? 0u : s.callback_hooks;
-    return hooks + s.buffer_type + s.backend + s.op;
+    return hooks + s.cuda_host_to_cuda + s.backend_transition + s.unsupported_op +
+           s.placement_buffer + s.other;
 }
 
-// One-backend CUDA FFN+DeltaNet+GA: only the host lm_head crossing remains.
-inline constexpr SplitLedger split_ledger_trace_off_cuda_ffn() {
+inline constexpr SplitLedger split_ledger_trace_off_park_stream(
+    uint32_t n_stream = kMeasured5080Stream7, uint32_t cuda_host_ffn = 0) {
     SplitLedger s;
     s.trace_off = true;
     s.callback_hooks = 0;
-    s.buffer_type = 1;  // CUDA weights -> host lm_head
-    s.backend = 1;
-    s.op = 1;  // MUL_MAT host logits
+    s.cuda_host_to_cuda = cuda_host_ffn;
+    s.backend_transition = 1;  // CUDA stack -> host lm_head
+    s.unsupported_op = 0;
+    s.placement_buffer = n_stream > 0u ? 1u : 0u;  // CPU overflow Q4 -> CUDA slot
+    s.other = 0;
     return s;
+}
+
+// Kept name: hour path is park-57 + stream-7, not park-all-64.
+inline constexpr SplitLedger split_ledger_trace_off_cuda_ffn() {
+    return split_ledger_trace_off_park_stream(kMeasured5080Stream7, 0);
 }
 
 inline std::string format_split_ledger(const SplitLedger& s) {
     const uint32_t hooks = s.trace_off ? 0u : s.callback_hooks;
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "SPLIT_LEDGER callback/hooks=%u hook/callback=%u "
+                  "CUDA_Host_to_CUDA=%u backend_transition=%u unsupported_op=%u "
+                  "placement/buffer=%u other=%u total=%u trace_off=%d",
+                  hooks, hooks, s.cuda_host_to_cuda, s.backend_transition, s.unsupported_op,
+                  s.placement_buffer, s.other, split_ledger_total(s), s.trace_off ? 1 : 0);
+    return buf;
+}
+
+// CUDA_Host before CUDA (the Host substring lives inside some CUDA names).
+enum class BuftKind : uint8_t { Cpu = 0, Cuda = 1, CudaHost = 2, Other = 3 };
+
+inline BuftKind classify_backend_buft_name(const char* n) {
+    if (!n || n[0] == '\0') {
+        return BuftKind::Other;
+    }
+    std::string s(n);
+    if (s.find("Host") != std::string::npos || s.find("HOST") != std::string::npos ||
+        s.find("host") != std::string::npos) {
+        return BuftKind::CudaHost;
+    }
+    if (s.find("CUDA") != std::string::npos || s.find("cuda") != std::string::npos ||
+        s.find("GPU") != std::string::npos || s.find("gpu") != std::string::npos) {
+        return BuftKind::Cuda;
+    }
+    if (s.find("CPU") != std::string::npos || s.find("cpu") != std::string::npos) {
+        return BuftKind::Cpu;
+    }
+    return BuftKind::Other;
+}
+
+inline std::string format_ffn_place_line(uint32_t parked_cuda, uint32_t streamed_cpu,
+                                         uint32_t streamed_cuda, uint32_t streamed_cuda_host) {
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "SPLIT_LEDGER callback/hooks=%u buffer_type=%u backend=%u op=%u "
-                  "total=%u trace_off=%d",
-                  hooks, s.buffer_type, s.backend, s.op, hooks + s.buffer_type + s.backend + s.op,
-                  s.trace_off ? 1 : 0);
+                  "FFN_PLACE parked_cuda=%u streamed_cpu=%u streamed_cuda=%u "
+                  "streamed_cuda_host=%u (want host=0 stream_cuda_gemm=1)",
+                  parked_cuda, streamed_cpu, streamed_cuda, streamed_cuda_host);
     return buf;
 }
 
@@ -146,6 +192,7 @@ struct BenchLine {
     uint64_t nvidia_used = 0;
     uint64_t h2d_per_tok = 0;
     uint64_t kv20k_bytes = kHourKvReserveBytes;
+    uint32_t real_h2d = 0;
 };
 
 inline constexpr bool bench_swap_7780(double tok_per_sec) {
@@ -166,6 +213,7 @@ inline BenchLine bench_from_snapshot(const PerfSnapshot& s) {
     b.nvidia_used = s.nvidia_used;
     b.h2d_per_tok = s.h2d_bytes_per_tok;
     b.kv20k_bytes = kHourKvReserveBytes;
+    b.real_h2d = s.h2d_bytes > 0 ? 1u : 0u;
     return b;
 }
 
@@ -175,14 +223,14 @@ inline std::string format_bench_line(const BenchLine& b) {
                   "BENCH TRACE=%s tok/s=%.2f decode_s=%.2f prefill_s=%.2f "
                   "prefill_tok=%u host_ffn_binds=%llu cuda_ffn_binds=%llu "
                   "cuda0_model_MiB=%.1f cuda0_compute_MiB=%.1f nvidia_used_MiB=%.1f "
-                  "h2d_B/tok=%llu kv20k_MiB=%.1f swap_7780=%d",
+                  "h2d_B/tok=%llu real_h2d=%u kv20k_MiB=%.1f swap_7780=%d",
                   b.trace_on ? "on" : "off", b.tok_per_sec, b.decode_s, b.prefill_s,
                   b.prefill_tok, static_cast<unsigned long long>(b.host_ffn_binds),
                   static_cast<unsigned long long>(b.cuda_ffn_binds),
                   static_cast<double>(b.cuda0_model) / (1024.0 * 1024.0),
                   static_cast<double>(b.cuda0_compute) / (1024.0 * 1024.0),
                   static_cast<double>(b.nvidia_used) / (1024.0 * 1024.0),
-                  static_cast<unsigned long long>(b.h2d_per_tok),
+                  static_cast<unsigned long long>(b.h2d_per_tok), b.real_h2d,
                   static_cast<double>(b.kv20k_bytes) / (1024.0 * 1024.0),
                   bench_swap_7780(b.tok_per_sec) ? 1 : 0);
     return buf;

@@ -24,27 +24,29 @@ inline constexpr uint32_t kQ4KSuperblock = 256;          // Q4_K last-dim / FFN 
 inline constexpr uint32_t kWeakKeepMin27B = 13056;       // 25% cap; 51*256
 inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 41*256
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
-inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
-inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
-// 5080: CUDA0 9851 MiB with 57 FFN parked ⇒ ~80 MiB/layer (not 150).
-// 7 leftover * 80 MiB = 560 MiB < 2409 MiB free. All 64 FFN fit.
-inline constexpr uint64_t kQ4FfnLayerBytesMeasured5080 = 80ull * 1024ull * 1024ull;
+inline constexpr uint32_t kQ4FfnLayerBytes = 160u * 1024u * 1024u;
+inline constexpr uint32_t kDoubleBufferPeakBytes = 340u * 1024u * 1024u;
+// Dave/James: one Q4 FFN layer is gate+up+down ≈ 160 MiB. The 80 MiB
+// "measured" figure was one tensor, not the layer — 80 MiB slots
+// truncated the H2D and real_h2d stayed 0. Each slot is a full layer.
+inline constexpr uint64_t kQ4FfnLayerBytesMeasured5080 = 160ull * 1024ull * 1024ull;
+inline constexpr uint64_t kStreamSlotBytes = 160ull * 1024ull * 1024ull;
 inline constexpr uint64_t kMeasured5080Cuda0MiB = 9851ull;
 inline constexpr uint64_t kMeasured5080FreeMiB = 2409ull;
 inline constexpr uint32_t kMeasured5080GraphSplits = 340;
 inline constexpr float kMeasured5080TokPerSecCbOff = 0.52f;
 inline constexpr uint32_t kMeasured5080Park57 = 57;
 inline constexpr uint32_t kMeasured5080Stream7 = 7;
-// Two Q4 stream slots reserved (~160MB pair). ggml cannot rebind a mapped
-// Q4 tensor mid-graph, so streamed layers left on host ggml split the
-// graph (340 splits, 0.52 tok/s). Measured alternative: park all 64 FFN
-// + DeltaNet on CUDA at load so the graph is one backend.
+// Slot A/B FIRST: 160 + 160 = 320, pair budget ≈ 340 MiB with align slack.
+// Then park leftover FFN under 14 GiB after KV@20k (0–56). Stream 57–63:
+// H2D N+1 while N GEMMs from VRAM. Park 64 is illegal. Unused cudaMalloc
+// is not a bind. ggml cannot rebind N Q4 tensors onto two mid-graph slots.
 inline constexpr uint32_t kNStreamSlots = 2;
-inline constexpr uint32_t kStreamSlotPairBudgetBytes = 160u * 1024u * 1024u;
-inline constexpr uint32_t kStreamWorkspaceBytes = kStreamSlotPairBudgetBytes;
-inline constexpr uint32_t kMinStreamedFfnLayers = 0;
+inline constexpr uint64_t kStreamSlotPairBudgetBytes = 340ull * 1024ull * 1024ull;
+inline constexpr uint64_t kStreamWorkspaceBytes = kStreamSlotPairBudgetBytes;
+inline constexpr uint32_t kMinStreamedFfnLayers = kMeasured5080Stream7;
 inline constexpr uint32_t kTargetMaxStreamedFfnLayers = 12;
-inline constexpr uint32_t kMaxParkedFfnLayers = kNLayers;  // 64 fit at 80 MiB/layer
+inline constexpr uint32_t kMaxParkedFfnLayers = kMeasured5080Park57;  // never 64
 // Extra GGUF block (block_count=65, nextn_predict_layers=1) is MTP.
 inline constexpr uint32_t kMtpExtraBlocks = 1;
 inline constexpr uint32_t kFloorBitsetBytes =
@@ -178,8 +180,8 @@ inline constexpr bool hour_park_stream_fits(
            stack <= kServeUsableBytes;
 }
 
-// Paper 150 MiB * 64 is a conservative weight guess. 5080 measured ~80 MiB
-// and 7 leftover layers fit in 2409 MiB free, so all 64 FFN park.
+// 160 MiB * 64 physically fits under 14 GiB after a 340 MiB slot pair.
+// That path is still illegal — stream the overflow.
 inline constexpr bool parked_all_ffn_exceeds_card(
     uint32_t n_ffn_layers = kNLayers,
     uint64_t usable = kServeUsableBytes,
@@ -190,8 +192,15 @@ inline constexpr bool parked_all_ffn_exceeds_card(
 inline constexpr bool ffn_park_all_fits_5080_measured() {
     const uint64_t extra7 = static_cast<uint64_t>(kNLayers - kMeasured5080Park57) *
                             kQ4FfnLayerBytesMeasured5080;
-    return hour_park_stream_fits(kNLayers, kQ4FfnLayerBytesMeasured5080) &&
-           extra7 <= kMeasured5080FreeMiB * 1024ull * 1024ull;
+    const uint64_t stack64 = hour_fixed_card_bytes() +
+                             static_cast<uint64_t>(kNLayers) * kQ4FfnLayerBytesMeasured5080;
+    return extra7 <= kMeasured5080FreeMiB * 1024ull * 1024ull &&
+           stack64 <= kHourCardSoftBytes;
+}
+
+inline constexpr bool hour_never_park_64(uint32_t n_park = ffn_park_layers_that_fit()) {
+    return n_park <= kMaxParkedFfnLayers && n_park < kNLayers &&
+           ffn_stream_layers(n_park) >= kMinStreamedFfnLayers;
 }
 
 inline constexpr uint64_t stream_pcie_bytes_per_tok(
@@ -199,11 +208,9 @@ inline constexpr uint64_t stream_pcie_bytes_per_tok(
     return static_cast<uint64_t>(n_stream) * layer_bytes;
 }
 
-// 0 streamed = all FFN resident CUDA (5080 measured alternative). 7-12 is
-// only the 20+ path if those layers actually run on ggml CUDA (they did not).
+// Hour path streams the overflow (57–63). park=64 / n_stream=0 is illegal.
 inline constexpr bool streamed_hour_in_20_tok_band(uint32_t n_stream) {
-    return n_stream == 0 ||
-           (n_stream >= 7 && n_stream <= kTargetMaxStreamedFfnLayers);
+    return n_stream >= kMinStreamedFfnLayers && n_stream <= kTargetMaxStreamedFfnLayers;
 }
 
 // Hook ring is 64. block_count=65 is 64 + MTP; do not count the extra block.
@@ -226,9 +233,8 @@ inline constexpr double cpu_ffn_tok_per_sec(double ms_per_layer = kCpuFfnMsPerLa
 }
 
 // Streamed FFN H2D only. Parked layers are GDDR-resident (not this bound).
-// 7 * 80MiB / 50 GB/s ≈ 11ms → ~89 tok/s PCIe ceiling. ggml cannot rebind
-// those Q4 tensors mid-graph, so the 7 stayed on host (340 splits, 0.52).
-// n_stream=0: B/tok=0; 20 tok/s is CUDA Q4 compute, not PCIe.
+// 7 * 80MiB / 50 GB/s ≈ 11ms → ~89 tok/s PCIe ceiling. Those seven must
+// H2D into A/B and GEMM from the CUDA buffer, not CUDA_Host (340 splits).
 inline constexpr double stream_pcie_tok_per_sec(
     uint32_t n_stream,
     double gbs = kPcie5PracticalGBs,

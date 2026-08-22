@@ -41,6 +41,8 @@ void test_hour_cli_resolve(TestContext& ctx) {
         if (p.find("ssm_") != std::string::npos) gpu_ssm = true;
     }
     CHECK(ctx, gpu_ffn && gpu_ssm);
+    CHECK(ctx, hybrid_ffn_park_layers() == kMeasured5080Park57);
+    CHECK(ctx, hybrid_ffn_park_layers() < kNLayers);
     CHECK(ctx, pinned_ga_weight_bytes() > 0);
     CHECK(ctx, pinned_ga_weight_bytes() < kGiB);  // card stack, not 15.3GB host GGUF
 
@@ -74,6 +76,7 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, !a2.cfg.disable_op_offload);
     CHECK(ctx, !a2.cfg.load_mtp);
     CHECK(ctx, !a2.cfg.trace_hooks);
+    CHECK(ctx, a2.cfg.n_parked_ffn == kMeasured5080Park57);
 
     char notrace[] = "--no-trace";
     char* off_args[] = {const_cast<char*>("micro-llm-trace"), model, path, notrace, nullptr};

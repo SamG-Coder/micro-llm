@@ -83,6 +83,138 @@ const float* tensor_f32_view(ggml_tensor* t, bool* on_device, bool* ptr_ok) {
     return p;
 }
 
+const char* buft_name_of(const ggml_tensor* t) {
+    if (!t || !t->buffer) {
+        return "none";
+    }
+    ggml_backend_buffer_type_t bt = ggml_backend_buffer_get_type(t->buffer);
+    const char* n = bt ? ggml_backend_buft_name(bt) : nullptr;
+    return n ? n : "unknown";
+}
+
+ggml_tensor* find_ffn_weight(const llama_model* model, uint32_t layer, const char* stem) {
+    char name[96];
+    const char* tails[] = {".weight", "", nullptr};
+    for (int i = 0; tails[i] != nullptr; ++i) {
+        std::snprintf(name, sizeof(name), "blk.%u.%s%s", layer, stem, tails[i]);
+        if (ggml_tensor* t = llama_model_get_tensor(model, name)) {
+            return t;
+        }
+    }
+    return nullptr;
+}
+
+struct StreamedFfnHost {
+    uint32_t layer = 0;
+    const void* host = nullptr;
+    size_t bytes = 0;
+    ggml_tensor* tensor = nullptr;
+};
+
+void collect_streamed_ffn_hosts(const llama_model* model, uint32_t n_park,
+                                std::vector<StreamedFfnHost>* out, uint32_t* parked_cuda,
+                                uint32_t* streamed_cpu, uint32_t* streamed_cuda,
+                                uint32_t* streamed_cuda_host) {
+    static const char* kStems[] = {"ffn_gate", "ffn_up", "ffn_down"};
+    for (uint32_t layer = 0; layer < kNLayers; ++layer) {
+        for (const char* stem : kStems) {
+            ggml_tensor* t = find_ffn_weight(model, layer, stem);
+            if (!t) {
+                continue;
+            }
+            const BuftKind kind = classify_backend_buft_name(buft_name_of(t));
+            const bool streamed = layer >= n_park;
+            if (!streamed) {
+                if (kind == BuftKind::Cuda) {
+                    ++(*parked_cuda);
+                }
+                continue;
+            }
+            if (kind == BuftKind::CudaHost) {
+                ++(*streamed_cuda_host);
+            } else if (kind == BuftKind::Cuda) {
+                ++(*streamed_cuda);
+            } else {
+                ++(*streamed_cpu);
+            }
+            StreamedFfnHost h;
+            h.layer = layer;
+            h.tensor = t;
+            h.bytes = ggml_nbytes(t);
+            if (t->buffer && ggml_backend_buffer_is_host(t->buffer) && t->data &&
+                !ptr_looks_like_integer_offset(t->data)) {
+                h.host = t->data;
+            }
+            out->push_back(h);
+            std::fprintf(stderr, "FFN_TENSOR layer=%u name=%s buft=%s stream=1 cuda_host=%d\n",
+                         layer, t->name, buft_name_of(t), kind == BuftKind::CudaHost ? 1 : 0);
+        }
+    }
+}
+
+struct GgmlSlotGuard {
+    ggml_backend_buffer_t a = nullptr;
+    ggml_backend_buffer_t b = nullptr;
+    ~GgmlSlotGuard() {
+        if (a) {
+            ggml_backend_buffer_free(a);
+        }
+        if (b) {
+            ggml_backend_buffer_free(b);
+        }
+    }
+};
+
+void register_streamed_layer_parts(TraceStreamer& streamer,
+                                   const std::vector<StreamedFfnHost>& streamed) {
+    uint32_t last = ~0u;
+    int part = 0;
+    for (const StreamedFfnHost& h : streamed) {
+        if (!h.host || h.bytes == 0) {
+            continue;
+        }
+        if (h.layer != last) {
+            part = 0;
+            last = h.layer;
+        }
+        streamer.set_stream_host_part(h.layer, part, h.host, h.bytes);
+        if (part < 2) {
+            ++part;
+        }
+    }
+}
+
+void h2d_packed_layer_into_ggml(ggml_backend_buffer_t dst, const std::vector<StreamedFfnHost>& streamed,
+                                uint32_t layer) {
+    if (!dst) {
+        return;
+    }
+    void* base = ggml_backend_buffer_get_base(dst);
+    const size_t cap = ggml_backend_buffer_get_size(dst);
+    if (!base || cap < kStreamSlotBytes) {
+        return;
+    }
+    size_t off = 0;
+    for (const StreamedFfnHost& h : streamed) {
+        if (h.layer != layer || !h.host || h.bytes == 0) {
+            continue;
+        }
+        if (off + h.bytes > cap) {
+            return;
+        }
+        unsigned char* p = static_cast<unsigned char*>(base) + off;
+        if (ggml_backend_buffer_is_host(dst)) {
+            std::memcpy(p, h.host, h.bytes);
+        }
+#if defined(MICRO_LLM_HAS_CUDA)
+        else {
+            cudaMemcpy(p, h.host, h.bytes, cudaMemcpyHostToDevice);
+        }
+#endif
+        off += h.bytes;
+    }
+}
+
 ggml_backend_buffer_type_t hybrid_gpu_buft() {
     auto from_reg = [](const char* name) -> ggml_backend_buffer_type_t {
         ggml_backend_reg_t reg = ggml_backend_reg_by_name(name);
@@ -213,8 +345,11 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     mparams.load_mtp = false;
 
     const VramLedger ledger = vram_ledger_slots_first();
-    const uint32_t n_park =
+    uint32_t n_park =
         cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ledger.n_parked_ffn;
+    if (n_park > kMaxParkedFfnLayers) {
+        n_park = kMaxParkedFfnLayers;
+    }
     const uint32_t n_stream = ffn_stream_layers(n_park);
     streamer.set_n_parked_ffn(n_park);
     streamer.set_log_cuda_ffn(true);
@@ -223,19 +358,25 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         static_cast<uint64_t>(n_park) * kQ4FfnLayerBytesMeasured5080;
     std::fprintf(stderr, "%s\n", format_vram_ledger(ledger).c_str());
     std::fprintf(stderr, "%s\n", format_ffn_cuda_park_line(n_park, park_bytes).c_str());
-    std::fprintf(stderr, "%s\n",
-                 format_ffn_slot_bind_line(0, ledger.slot_a_bytes, streamer.slot_bound(0)).c_str());
-    std::fprintf(stderr, "%s\n",
-                 format_ffn_slot_bind_line(1, ledger.slot_b_bytes, streamer.slot_bound(1)).c_str());
     std::fprintf(stderr,
                  "ffn_cuda_plan ngl=0 slots_first=1 kv20k=1 park_weights=1 "
-                 "trace_hooks=%d cb_eval=%s ggml_rebind_q4=%d\n",
-                 cfg.trace_hooks ? 1 : 0, cfg.trace_hooks ? "set" : "nullptr",
-                 ggml_can_rebind_q4_midgraph() ? 1 : 0);
+                 "park=%u stream=%u never_64=1 trace_hooks=%d cb_eval=%s "
+                 "ggml_rebind_q4=%d op_offload=%d\n",
+                 n_park, n_stream, cfg.trace_hooks ? 1 : 0, cfg.trace_hooks ? "set" : "nullptr",
+                 ggml_can_rebind_q4_midgraph() ? 1 : 0, cfg.disable_op_offload ? 0 : 1);
     std::fprintf(stderr, "%s\n", format_pcie_bound_line(n_stream).c_str());
 
     ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
     ggml_backend_buffer_type_t gpu_buft = hybrid_gpu_buft();
+    // ggml-visible A/B BEFORE model load. Unused malloc is still not a bind.
+    GgmlSlotGuard ggml_slots;
+    if (gpu_buft) {
+        ggml_slots.a = ggml_backend_buft_alloc_buffer(gpu_buft, ledger.slot_a_bytes);
+        ggml_slots.b = ggml_backend_buft_alloc_buffer(gpu_buft, ledger.slot_b_bytes);
+        std::fprintf(stderr, "ffn_ggml_slots a=%d b=%d bytes=%llu (alloc_first=1 bind=0)\n",
+                     ggml_slots.a ? 1 : 0, ggml_slots.b ? 1 : 0,
+                     static_cast<unsigned long long>(ledger.slot_a_bytes + ledger.slot_b_bytes));
+    }
     const std::vector<std::string> gpu_pats = hybrid_gpu_tensor_regexes(n_park);
     const std::vector<std::string> cpu_pats = hybrid_cpu_tensor_regexes();
     std::vector<llama_model_tensor_buft_override> buft_ovs;
@@ -293,10 +434,23 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     clocks.set_plan(n_park, n_stream, true);
     clocks.set_trace_off(!cfg.trace_hooks);
     clocks.set_ffn_gemm(kFfnGemmPerToken, 0);
+    std::vector<StreamedFfnHost> streamed_hosts;
+    uint32_t parked_cuda_n = 0;
+    uint32_t streamed_cpu_n = 0;
+    uint32_t streamed_cuda_n = 0;
+    uint32_t streamed_cuda_host_n = 0;
+    collect_streamed_ffn_hosts(model, n_park, &streamed_hosts, &parked_cuda_n, &streamed_cpu_n,
+                              &streamed_cuda_n, &streamed_cuda_host_n);
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_place_line(parked_cuda_n, streamed_cpu_n, streamed_cuda_n,
+                                       streamed_cuda_host_n)
+                     .c_str());
+    register_streamed_layer_parts(streamer, streamed_hosts);
     {
-        const SplitLedger sl = split_ledger_trace_off_cuda_ffn();
-        clocks.set_split_ledger(cfg.trace_hooks ? sl.callback_hooks : 0, sl.buffer_type,
-                                sl.backend, sl.op);
+        const SplitLedger sl =
+            split_ledger_trace_off_park_stream(n_stream, streamed_cuda_host_n);
+        clocks.set_split_ledger(cfg.trace_hooks ? sl.callback_hooks : 0, sl.placement_buffer,
+                                sl.backend_transition, sl.unsupported_op);
     }
     streamer.set_perf(&clocks);
     uint64_t vfree = 0;
@@ -381,6 +535,25 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
 
     streamer.begin_session();
     clocks.set_plan(n_park, n_stream, streamer.host_pages_pinned());
+    const uint32_t first_stream = n_park;
+    const uint32_t next_stream = first_stream + 1 < kNLayers ? first_stream + 1 : ~0u;
+    h2d_packed_layer_into_ggml(ggml_slots.a, streamed_hosts, first_stream);
+    if (next_stream != ~0u) {
+        h2d_packed_layer_into_ggml(ggml_slots.b, streamed_hosts, next_stream);
+    }
+    const uint64_t overflow_h2d = streamer.h2d_overflow_q4();
+    const bool real_h2d = streamer.slot_real_h2d(0) && overflow_h2d > 0;
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_slot_bind_line(0, ledger.slot_a_bytes, streamer.slot_real_h2d(0)).c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_slot_bind_line(1, ledger.slot_b_bytes, streamer.slot_real_h2d(1)).c_str());
+    std::fprintf(stderr,
+                 "ffn_stream_bind n=%u real_h2d=%d h2d_B=%llu cuda_ffn_binds=%llu "
+                 "host_ffn_binds=%llu op_offload=%d cuda_host=%u\n",
+                 n_stream, real_h2d ? 1 : 0, static_cast<unsigned long long>(streamer.h2d_bytes()),
+                 static_cast<unsigned long long>(streamer.cuda_bind_count()),
+                 static_cast<unsigned long long>(streamer.host_bind_count()),
+                 cfg.disable_op_offload ? 0 : 1, streamed_cuda_host_n);
     hooks.mark_reserved_core(256);
     for (llama_token id : tokens) {
         if (id >= 0 && static_cast<uint32_t>(id) < kVocabSize) {
@@ -398,6 +571,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
             session.begin_token(static_cast<uint32_t>(consumed));
         }
         clocks.begin_decode();
+        streamer.h2d_overflow_q4();
         clocks.begin_span(PerfSpan::Gpu);
         const int rc = llama_decode(ctx, batch);
         clocks.end_span(PerfSpan::Gpu);
@@ -446,7 +620,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
             }
         }
         const PerfSnapshot snap = clocks.snapshot();
-        SplitLedger sl = split_ledger_trace_off_cuda_ffn();
+        SplitLedger sl = split_ledger_trace_off_park_stream(n_stream, streamed_cuda_host_n);
         sl.trace_off = !cfg.trace_hooks;
         sl.callback_hooks = 0;
         std::fprintf(stderr, "%s\n", format_performance_line(snap).c_str());
@@ -505,6 +679,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         }
         llama_batch batch = llama_batch_get_one(&last, 1);
         clocks.begin_decode();
+        streamer.h2d_overflow_q4();
         clocks.begin_span(PerfSpan::Gpu);
         const int rc = llama_decode(ctx, batch);
         clocks.end_span(PerfSpan::Gpu);
@@ -527,9 +702,8 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     st.n_tokens = hooks.table().n_tokens;
     st.perf = clocks.snapshot();
     if (st.ok) {
-        st.message = "llama.cpp qwen35 graph eval completed; MLPT is a real hour trace "
-                     "(GA+DeltaNet+FFN on CUDA at load, GPU accums, no 17408 D2H, "
-                     "no mid-graph Q4 rebind)";
+        st.message = "llama.cpp qwen35 graph eval completed; park 0-56, stream 57-63 "
+                     "H2D into A/B (op_offload CUDA GEMM, not CUDA_Host, never park-64)";
     } else if (st.message.empty()) {
         st.message = "llama.cpp ran but after_logits never fired; refusing to fake n_fired";
     }
