@@ -18,6 +18,7 @@ struct VramLedger {
     uint64_t ga_bytes = kPinnedGaWeightBytes;
     uint64_t kv20k_bytes = kHourKvReserveBytes;
     uint64_t scratch_bytes = kCudaScratchBytes;  // 0.9 GiB
+    uint64_t graph_reserve_bytes = kHourGraphReserveBytes;  // before extra park
     uint64_t slot_a_bytes = 0;
     uint64_t slot_b_bytes = 0;
     uint64_t parked_ffn_bytes = 0;
@@ -27,8 +28,8 @@ struct VramLedger {
 };
 
 inline constexpr uint64_t vram_ledger_used(const VramLedger& v) {
-    return v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.slot_a_bytes + v.slot_b_bytes +
-           v.parked_ffn_bytes;
+    return v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.graph_reserve_bytes + v.slot_a_bytes +
+           v.slot_b_bytes + v.parked_ffn_bytes;
 }
 
 inline constexpr uint64_t vram_ledger_free_to_hard(const VramLedger& v) {
@@ -43,8 +44,9 @@ inline constexpr VramLedger vram_ledger_slots_first(
     VramLedger v;
     v.slot_a_bytes = kStreamSlotBytes;  // full layer ~160 MiB, not 80
     v.slot_b_bytes = kStreamSlotBytes;
-    const uint64_t fixed = v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.slot_a_bytes +
-                           v.slot_b_bytes;
+    v.graph_reserve_bytes = kHourGraphReserveBytes;  // BEFORE any extra park
+    const uint64_t fixed = v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.graph_reserve_bytes +
+                           v.slot_a_bytes + v.slot_b_bytes;
     uint32_t n_park = 0;
     if (fixed < soft && layer_bytes != 0) {
         n_park = static_cast<uint32_t>((soft - fixed) / layer_bytes);
@@ -59,14 +61,16 @@ inline constexpr VramLedger vram_ledger_slots_first(
 }
 
 inline std::string format_vram_ledger(const VramLedger& v) {
-    char buf[512];
+    char buf[640];
     std::snprintf(buf, sizeof(buf),
                   "VRAM_LEDGER ga_MiB=%.1f kv20k_MiB=%.1f scratch_MiB=%.1f "
-                  "slot_A_MiB=%.1f slot_B_MiB=%.1f parked_ffn_MiB=%.1f "
-                  "used_MiB=%.1f free_to_15_2_MiB=%.1f park=%u stream=%u",
+                  "graph_reserve_MiB=%.1f slot_A_MiB=%.1f slot_B_MiB=%.1f "
+                  "parked_ffn_MiB=%.1f used_MiB=%.1f free_to_15_2_MiB=%.1f "
+                  "park=%u stream=%u extra_park=0",
                   static_cast<double>(v.ga_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.kv20k_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.scratch_bytes) / (1024.0 * 1024.0),
+                  static_cast<double>(v.graph_reserve_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.slot_a_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.slot_b_bytes) / (1024.0 * 1024.0),
                   static_cast<double>(v.parked_ffn_bytes) / (1024.0 * 1024.0),
@@ -96,14 +100,17 @@ inline constexpr uint32_t split_ledger_total(const SplitLedger& s) {
 }
 
 inline constexpr SplitLedger split_ledger_trace_off_park_stream(
-    uint32_t n_stream = kMeasured5080Stream7, uint32_t cuda_host_ffn = 0) {
+    uint32_t n_stream = kMeasured5080Stream7, uint32_t cuda_host_ffn = 0,
+    uint32_t cpu_ffn_srcs = 0) {
     SplitLedger s;
     s.trace_off = true;
     s.callback_hooks = 0;
     s.cuda_host_to_cuda = cuda_host_ffn;
     s.backend_transition = 1;  // CUDA stack -> host lm_head
     s.unsupported_op = 0;
-    s.placement_buffer = n_stream > 0u ? 1u : 0u;  // CPU overflow Q4 -> CUDA slot
+    (void)n_stream;
+    // Leftover CPU/CUDA_Host MUL_MAT srcs (blk.63 ffn_gate/up). 0 after bind.
+    s.placement_buffer = cpu_ffn_srcs;
     s.other = 0;
     return s;
 }
@@ -125,6 +132,116 @@ inline std::string format_split_ledger(const SplitLedger& s) {
     return buf;
 }
 
+// Why a graph split exists. Print every kind every run (n may be 0).
+enum class SplitCauseKind : uint8_t {
+    HookCallback = 0,
+    CudaHostToCuda = 1,
+    BackendTransition = 2,
+    UnsupportedOp = 3,
+    Placement = 4,
+    Other = 5,
+};
+
+inline const char* split_cause_kind_name(SplitCauseKind k) {
+    switch (k) {
+        case SplitCauseKind::HookCallback:
+            return "hook/callback";
+        case SplitCauseKind::CudaHostToCuda:
+            return "CUDA_Host_to_CUDA";
+        case SplitCauseKind::BackendTransition:
+            return "backend_transition";
+        case SplitCauseKind::UnsupportedOp:
+            return "unsupported_op";
+        case SplitCauseKind::Placement:
+            return "placement/buffer";
+        case SplitCauseKind::Other:
+            return "other";
+    }
+    return "other";
+}
+
+inline bool name_is_ffn_mul_mat_src(const char* tensor) {
+    if (!tensor || tensor[0] == '\0') {
+        return false;
+    }
+    const std::string t(tensor);
+    return t.find("ffn_gate") != std::string::npos || t.find("ffn_up") != std::string::npos ||
+           t.find("ffn_down") != std::string::npos;
+}
+
+inline bool name_is_ffn_input_norm(const char* tensor) {
+    if (!tensor || tensor[0] == '\0') {
+        return false;
+    }
+    const std::string t(tensor);
+    return t.find("attn_post_norm") != std::string::npos ||
+           t.find("post_attention_norm") != std::string::npos ||
+           t.find("ffn_norm") != std::string::npos;
+}
+
+inline std::string format_split_cause_line(SplitCauseKind k, uint32_t n, const char* tensor,
+                                          const char* buft, int32_t layer) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "SPLIT_CAUSE kind=%s n=%u tensor=%s buft=%s layer=%d "
+                  "(hook/callback must be 0 on --trace-off)",
+                  split_cause_kind_name(k), n, tensor && tensor[0] ? tensor : "-",
+                  buft && buft[0] ? buft : "-", layer);
+    return buf;
+}
+
+inline std::string format_split_why_line(uint32_t n_splits, const char* last_tensor,
+                                        const char* last_buft) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "SPLIT_WHY n=%u bs=1 last=%s last_buft=%s "
+                  "(532>340 = extra CPU hops on streamed FFN src/view)",
+                  n_splits, last_tensor && last_tensor[0] ? last_tensor : "-",
+                  last_buft && last_buft[0] ? last_buft : "-");
+    return buf;
+}
+
+inline std::string format_split_causes_block(const SplitLedger& s, const char* place_tensor,
+                                            const char* place_buft, int32_t place_layer) {
+    std::string out;
+    out += format_split_cause_line(SplitCauseKind::HookCallback, s.trace_off ? 0u : s.callback_hooks,
+                                   "cb_eval", s.trace_off ? "nullptr" : "set", -1);
+    out += '\n';
+    out += format_split_cause_line(SplitCauseKind::CudaHostToCuda, s.cuda_host_to_cuda, place_tensor,
+                                   place_buft, place_layer);
+    out += '\n';
+    out += format_split_cause_line(SplitCauseKind::BackendTransition, s.backend_transition,
+                                   "output.weight", "CPU", -1);
+    out += '\n';
+    out += format_split_cause_line(SplitCauseKind::UnsupportedOp, s.unsupported_op, "-", "-", -1);
+    out += '\n';
+    out += format_split_cause_line(SplitCauseKind::Placement, s.placement_buffer, place_tensor,
+                                   place_buft, place_layer);
+    out += '\n';
+    out += format_split_cause_line(SplitCauseKind::Other, s.other, "-", "-", -1);
+    return out;
+}
+
+// qwen35 build_ffn reads ffn_{gate,up,down} plus optional *_s scales.
+// attn_post_norm is the FFN input; a CPU norm pulls MUL_MAT onto host.
+inline constexpr const char* kStreamedBindSuffixes[] = {
+    "ffn_gate.weight",
+    "ffn_up.weight",
+    "ffn_down.weight",
+    "ffn_gate.scale",
+    "ffn_up.scale",
+    "ffn_down.scale",
+    "ffn_gate",
+    "ffn_up",
+    "ffn_down",
+    "ffn_norm.weight",
+    "attn_post_norm.weight",
+    "post_attention_norm.weight",
+};
+
+inline constexpr uint32_t kStreamedBindSuffixCount =
+    static_cast<uint32_t>(sizeof(kStreamedBindSuffixes) / sizeof(kStreamedBindSuffixes[0]));
+
 // CUDA_Host before CUDA (the Host substring lives inside some CUDA names).
 enum class BuftKind : uint8_t { Cpu = 0, Cuda = 1, CudaHost = 2, Other = 3 };
 
@@ -145,6 +262,29 @@ inline BuftKind classify_backend_buft_name(const char* n) {
         return BuftKind::Cpu;
     }
     return BuftKind::Other;
+}
+
+inline SplitCauseKind classify_split_cause(const char* tensor, const char* buft, bool trace_off) {
+    if (!trace_off) {
+        return SplitCauseKind::HookCallback;
+    }
+    const BuftKind bk = classify_backend_buft_name(buft);
+    if (bk == BuftKind::CudaHost) {
+        return SplitCauseKind::CudaHostToCuda;
+    }
+    const std::string t = tensor ? tensor : "";
+    if (name_is_ffn_mul_mat_src(tensor) || name_is_ffn_input_norm(tensor)) {
+        if (bk != BuftKind::Cuda) {
+            return SplitCauseKind::Placement;
+        }
+    }
+    if (t.find("output") != std::string::npos && t.find("ffn") == std::string::npos) {
+        return SplitCauseKind::BackendTransition;
+    }
+    if (bk == BuftKind::Cpu) {
+        return SplitCauseKind::BackendTransition;
+    }
+    return SplitCauseKind::Other;
 }
 
 inline std::string format_ffn_place_line(uint32_t parked_cuda, uint32_t streamed_cpu,

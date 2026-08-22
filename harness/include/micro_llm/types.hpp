@@ -37,6 +37,11 @@ inline constexpr uint32_t kMeasured5080GraphSplits = 340;
 inline constexpr float kMeasured5080TokPerSecCbOff = 0.52f;
 inline constexpr uint32_t kMeasured5080Park57 = 57;
 inline constexpr uint32_t kMeasured5080Stream7 = 7;
+// 9bcbfb7: CUDA0 13110 (under 14) then graph reserve died at 532 splits.
+// Count this BEFORE any extra park. Do not park overflow to hide a CPU 63.
+inline constexpr uint64_t kMeasured5080Cuda0BindMiB = 13110ull;
+inline constexpr uint32_t kMeasured5080ReserveSplits = 532;
+inline constexpr uint64_t kHourGraphReserveBytes = 1026ull * 1024ull * 1024ull;
 // Slot A/B FIRST: 160 + 160 = 320, pair budget ≈ 340 MiB with align slack.
 // Then park leftover FFN under 14 GiB after KV@20k (0–56). Stream 57–63:
 // H2D N+1 while N GEMMs from VRAM. Park 64 is illegal. Unused cudaMalloc

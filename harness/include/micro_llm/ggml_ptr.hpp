@@ -80,19 +80,24 @@ inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t 
     return nbytes != 0 && cap != 0 && off <= cap && nbytes <= cap - off;
 }
 
-// Streamed layer → ggml slot. 0 = A, 1 = B, 2 = extra ggml CUDA buffer
-// (not llama park-64, not a private cudaMalloc). -1 = parked.
+// Streamed layer → ggml slot. 63 → A, 62 → B. Other overflow stays CPU
+// (op_offload stream). 2 (extra park buffer) is illegal. -1 = parked.
+inline constexpr int kStreamSlotParked = -1;
+inline constexpr int kStreamSlotA = 0;
+inline constexpr int kStreamSlotB = 1;
+inline constexpr int kStreamSlotCpu = 3;
+
 inline constexpr int ggml_stream_slot_kind(uint32_t layer, uint32_t n_park) {
     if (layer < n_park) {
-        return -1;
+        return kStreamSlotParked;
     }
-    if (layer == n_park) {
-        return 0;
+    if (layer + 1u == kNLayers) {
+        return kStreamSlotA;  // blk.63 GEMM from slot A
     }
-    if (layer == n_park + 1) {
-        return 1;
+    if (layer + 2u == kNLayers) {
+        return kStreamSlotB;  // blk.62 in B (N+1 overlap)
     }
-    return 2;
+    return kStreamSlotCpu;
 }
 
 }  // namespace micro_llm

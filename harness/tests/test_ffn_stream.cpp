@@ -29,11 +29,12 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, !ggml_slot_pack_ok(1, kStreamSlotBytes, kStreamSlotBytes));
     CHECK(ctx, !ggml_slot_pack_ok(0, kStreamSlotBytes + 1, kStreamSlotBytes));
     CHECK(ctx, !ggml_slot_pack_ok(0, 0, kStreamSlotBytes));
-    CHECK(ctx, ggml_stream_slot_kind(56, 57) == -1);
-    CHECK(ctx, ggml_stream_slot_kind(57, 57) == 0);
-    CHECK(ctx, ggml_stream_slot_kind(58, 57) == 1);
-    CHECK(ctx, ggml_stream_slot_kind(59, 57) == 2);
-    CHECK(ctx, ggml_stream_slot_kind(63, 57) == 2);
+    CHECK(ctx, ggml_stream_slot_kind(56, 57) == kStreamSlotParked);
+    CHECK(ctx, ggml_stream_slot_kind(63, 57) == kStreamSlotA);
+    CHECK(ctx, ggml_stream_slot_kind(62, 57) == kStreamSlotB);
+    CHECK(ctx, ggml_stream_slot_kind(57, 57) == kStreamSlotCpu);
+    CHECK(ctx, ggml_stream_slot_kind(59, 57) == kStreamSlotCpu);
+    CHECK(ctx, ggml_stream_slot_kind(59, 57) != 2);  // extra park is illegal
     const std::string tbind =
         format_ggml_tensor_bind_line(57, kQ4FfnLayerBytesMeasured5080, true, true);
     CHECK(ctx, tbind.find("ggml_tensor_bind layer=57") == 0);
@@ -61,6 +62,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
                    kStreamSlotPairBudgetBytes);
     CHECK(ctx, led.kv20k_bytes == kHourKvReserveBytes);
     CHECK(ctx, led.scratch_bytes == kCudaScratchBytes);
+    CHECK(ctx, led.graph_reserve_bytes == kHourGraphReserveBytes);
     CHECK(ctx, led.n_parked_ffn == kMeasured5080Park57);
     CHECK(ctx, led.n_streamed_ffn == kMeasured5080Stream7);
     CHECK(ctx, hour_never_park_64(led.n_parked_ffn));
@@ -69,6 +71,8 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, vline.find("VRAM_LEDGER") == 0);
     CHECK(ctx, vline.find("slot_A_MiB=160.0") != std::string::npos);
     CHECK(ctx, vline.find("slot_B_MiB=160.0") != std::string::npos);
+    CHECK(ctx, vline.find("graph_reserve_MiB=") != std::string::npos);
+    CHECK(ctx, vline.find("extra_park=0") != std::string::npos);
     CHECK(ctx, vline.find("kv20k_MiB=") != std::string::npos);
     CHECK(ctx, vline.find("free_to_15_2_MiB=") != std::string::npos);
 
@@ -79,6 +83,27 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, sline.find("callback/hooks=0") != std::string::npos);
     CHECK(ctx, sline.find("CUDA_Host_to_CUDA=0") != std::string::npos);
     CHECK(ctx, sline.find("placement/buffer=") != std::string::npos);
+    CHECK(ctx, classify_split_cause("blk.63.ffn_gate.weight", "CPU", true) ==
+                   SplitCauseKind::Placement);
+    CHECK(ctx, classify_split_cause("blk.63.ffn_up.weight", "CUDA_Host", true) ==
+                   SplitCauseKind::CudaHostToCuda);
+    CHECK(ctx, classify_split_cause("output.weight", "CPU", true) ==
+                   SplitCauseKind::BackendTransition);
+    CHECK(ctx, classify_split_cause("cb_eval", "set", false) == SplitCauseKind::HookCallback);
+    CHECK(ctx, name_is_ffn_mul_mat_src("blk.63.ffn_gate.weight"));
+    const std::string causes =
+        format_split_causes_block(sl, "blk.63.ffn_gate.weight", "CPU", 63);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=hook/callback") != std::string::npos);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=placement/buffer") != std::string::npos);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=CUDA_Host_to_CUDA") != std::string::npos);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=backend_transition") != std::string::npos);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=unsupported_op") != std::string::npos);
+    CHECK(ctx, causes.find("SPLIT_CAUSE kind=other") != std::string::npos);
+    const std::string why =
+        format_split_why_line(kMeasured5080ReserveSplits, "blk.63.ffn_gate.weight", "CPU");
+    CHECK(ctx, why.find("SPLIT_WHY n=532") == 0);
+    CHECK(ctx, why.find("last=blk.63.ffn_gate.weight") != std::string::npos);
+    CHECK(ctx, kMeasured5080Cuda0BindMiB == 13110ull);
     SplitLedger hooked = sl;
     hooked.trace_off = true;
     hooked.callback_hooks = 99;
@@ -139,7 +164,9 @@ void test_ffn_stream_budget(TestContext& ctx) {
         if (p.find("attn_output") != std::string::npos) has_ga = true;
         if (p.find("token_embd") != std::string::npos) has_embed = true;
         if (p.find("ssm_") != std::string::npos) has_ssm = true;
-        if (p.find("[0-9]+") != std::string::npos && p.find("ffn_") != std::string::npos) {
+        if (p.find("[0-9]+") != std::string::npos &&
+            (p.find("ffn_gate") != std::string::npos || p.find("ffn_up") != std::string::npos ||
+             p.find("ffn_down") != std::string::npos)) {
             catch_all_ffn = true;
         }
     }
@@ -160,6 +187,19 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, hit56);
     CHECK(ctx, !hit57);
     CHECK(ctx, !hit63);
+    bool hit_post63 = false;
+    for (const auto& p : gpu) {
+        if (p.find("post_norm") == std::string::npos &&
+            p.find("post_attention_norm") == std::string::npos) {
+            continue;
+        }
+        const std::regex re(p);
+        if (std::regex_search(std::string("blk.63.attn_post_norm.weight"), re) ||
+            std::regex_search(std::string("blk.63.post_attention_norm.weight"), re)) {
+            hit_post63 = true;
+        }
+    }
+    CHECK(ctx, hit_post63);
     CHECK(ctx, classify_backend_buft_name("CUDA_Host") == BuftKind::CudaHost);
     CHECK(ctx, classify_backend_buft_name("CUDA0") == BuftKind::Cuda);
     CHECK(ctx, classify_backend_buft_name("CPU") == BuftKind::Cpu);

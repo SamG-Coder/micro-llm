@@ -48,12 +48,19 @@ std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park) {
     out.push_back("blk\\.[0-9]+\\.ssm_");
     out.push_back("blk\\.[0-9]+\\.attn_qkv");
     out.push_back("blk\\.[0-9]+\\.attn_gate");
+    // Tiny F32 norms on every layer. A CPU attn_post_norm feeds FFN and
+    // pulls blk.63 ffn_gate/up MUL_MAT onto host (532 splits).
+    out.push_back("blk\\.[0-9]+\\.attn_norm");
+    out.push_back("blk\\.[0-9]+\\.attn_post_norm");
+    out.push_back("blk\\.[0-9]+\\.post_attention_norm");
+    out.push_back("blk\\.[0-9]+\\.attn_q_norm");
+    out.push_back("blk\\.[0-9]+\\.attn_k_norm");
+    out.push_back("blk\\.[0-9]+\\.ffn_norm");
     // 16 Gated Attention QKVO (layers 3,7,...,63).
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_q[^k]");
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_k");
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_v");
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_output");
-    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_norm");
     out.push_back("token_embd");
     return out;
 }
