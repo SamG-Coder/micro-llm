@@ -96,6 +96,8 @@ TensorDataKind tensor_data_kind_of(const ggml_tensor* t);
 void print_reserve_av_node(const ggml_tensor* t, const char* tag);
 void print_reserve_av_candidates(const llama_model* model, const char* when);
 void print_tail_splits(const llama_model* model, const char* when);
+void print_result_output_srcs(const llama_model* model, const char* when);
+void print_tail_next(const char* when, const void* logits);
 
 ggml_tensor* find_layer_tensor(const llama_model* model, uint32_t layer, const char* suffix) {
     char name[96];
@@ -266,10 +268,14 @@ struct GgmlSlotGuard {
 // result_norm t->data (alloc offset / device VA) as a host pointer.
 struct HostLmHeadGuard {
     ggml_backend_buffer_t weight = nullptr;
+    ggml_backend_buffer_t norm = nullptr;
     ggml_backend_buffer_t hidden = nullptr;
     ~HostLmHeadGuard() {
         if (weight) {
             ggml_backend_buffer_free(weight);
+        }
+        if (norm) {
+            ggml_backend_buffer_free(norm);
         }
         if (hidden) {
             ggml_backend_buffer_free(hidden);
@@ -353,20 +359,34 @@ ggml_tensor* mmap_root(ggml_tensor* t) {
     return r;
 }
 
-uint32_t bind_host_lm_head(const llama_model* model, ggml_backend_buffer_type_t cpu_buft,
-                           HostLmHeadGuard* guard, uint32_t n_ubatch) {
-    if (!model || !cpu_buft || !guard) {
+int tensor_is_real_host_va(const ggml_tensor* t) {
+    if (!t) {
         return 0;
     }
-    ggml_tensor* t = llama_model_get_tensor(model, "output.weight");
-    if (!t) {
-        std::fprintf(stderr, "LM_HEAD_HOST missing output.weight\n");
+    const char* buft = buft_name_of(t);
+    const TensorDataKind kind = tensor_data_kind_of(t);
+    if (classify_backend_buft_name(buft) == BuftKind::Cuda || buft_is_cpu_mapped(buft)) {
         return 0;
+    }
+    return kind == TensorDataKind::InBuffer && t->data &&
+                   !ptr_looks_like_integer_offset(t->data)
+               ? 1
+               : 0;
+}
+
+bool host_bind_named_weight(const llama_model* model, const char* name,
+                            ggml_backend_buffer_type_t cpu_buft, ggml_backend_buffer_t* out_buf) {
+    if (!model || !name || !cpu_buft || !out_buf) {
+        return false;
+    }
+    ggml_tensor* t = llama_model_get_tensor(model, name);
+    if (!t) {
+        return false;
     }
     ggml_tensor* root = mmap_root(t);
     const size_t nbytes = ggml_nbytes(root);
     if (nbytes == 0) {
-        return 0;
+        return false;
     }
     std::vector<uint8_t> host(nbytes);
     if (root->buffer && ggml_backend_buffer_is_host(root->buffer) && root->data &&
@@ -375,42 +395,62 @@ uint32_t bind_host_lm_head(const llama_model* model, ggml_backend_buffer_type_t 
     } else {
         ggml_backend_tensor_get(root, host.data(), 0, nbytes);
     }
-    guard->weight = ggml_backend_buft_alloc_buffer(cpu_buft, nbytes);
-    if (!guard->weight || !attach_to_real_host(guard->weight, root, host.data(), nbytes)) {
-        std::fprintf(stderr, "LM_HEAD_HOST bind FAIL n=%llu\n",
+    *out_buf = ggml_backend_buft_alloc_buffer(cpu_buft, nbytes);
+    if (!*out_buf || !attach_to_real_host(*out_buf, root, host.data(), nbytes)) {
+        std::fprintf(stderr, "LM_HEAD_HOST bind FAIL name=%s n=%llu\n", name,
                      static_cast<unsigned long long>(nbytes));
-        return 0;
+        return false;
     }
-    ggml_backend_buffer_set_usage(guard->weight, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    ggml_backend_buffer_set_usage(*out_buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     if (t != root) {
         t->extra = nullptr;
-        t->buffer = guard->weight;
+        t->buffer = *out_buf;
         t->view_src = root;
         void* const view_va =
-            device_va_from_buffer(ggml_backend_buffer_get_base(guard->weight), t->view_offs);
+            device_va_from_buffer(ggml_backend_buffer_get_base(*out_buf), t->view_offs);
         t->data = view_va;
         ggml_backend_view_init(t);
         t->data = view_va;
     }
+    return true;
+}
+
+uint32_t bind_host_lm_head(const llama_model* model, ggml_backend_buffer_type_t cpu_buft,
+                           HostLmHeadGuard* guard, uint32_t n_ubatch) {
+    if (!model || !cpu_buft || !guard) {
+        return 0;
+    }
+    // output_norm first: result_norm follows that weight onto host, so
+    // residual D2Hs once before host RMS_NORM and host MUL_MAT.
+    if (!host_bind_named_weight(model, "output_norm.weight", cpu_buft, &guard->norm)) {
+        host_bind_named_weight(model, "output_norm", cpu_buft, &guard->norm);
+    }
+    if (!host_bind_named_weight(model, "output.weight", cpu_buft, &guard->weight)) {
+        std::fprintf(stderr, "LM_HEAD_HOST missing output.weight\n");
+        return 0;
+    }
     const size_t hid = static_cast<size_t>(kHiddenDim) *
                        static_cast<size_t>(n_ubatch ? n_ubatch : 1u) * sizeof(float);
     guard->hidden = ggml_backend_buft_alloc_buffer(cpu_buft, hid);
-    const char* buft = buft_name_of(t);
-    const TensorDataKind kind = tensor_data_kind_of(t);
+    ggml_tensor* ow = llama_model_get_tensor(model, "output.weight");
+    const char* buft = buft_name_of(ow);
+    const TensorDataKind kind = tensor_data_kind_of(ow);
     const int mmap = buft_is_cpu_mapped(buft) ? 1 : 0;
-    const int real_host =
-        (classify_backend_buft_name(buft) != BuftKind::Cuda && kind == TensorDataKind::InBuffer &&
-         !mmap)
-            ? 1
-            : 0;
     std::fprintf(stderr, "%s\n",
-                 format_lm_head_host_line(buft, tensor_data_kind_name(kind), nbytes, real_host, mmap)
+                 format_lm_head_host_line(buft, tensor_data_kind_name(kind),
+                                          ow ? ggml_nbytes(mmap_root(ow)) : 0,
+                                          tensor_is_real_host_va(ow), mmap)
                      .c_str());
+    ggml_tensor* on = llama_model_get_tensor(model, "output_norm.weight");
+    if (!on) {
+        on = llama_model_get_tensor(model, "output_norm");
+    }
     std::fprintf(stderr,
-                 "LM_HEAD_HIDDEN host=%d bytes=%llu result_norm=%llu "
-                 "(D2H dest; not CUDA; A/B untouched)\n",
-                 guard->hidden ? 1 : 0, static_cast<unsigned long long>(hid),
-                 static_cast<unsigned long long>(kResultNormBytes));
+                 "LM_HEAD_NORM host_va=%d buft=%s data=%s hidden=%d bytes=%llu "
+                 "(residual D2H once; not CUDA; A/B untouched)\n",
+                 tensor_is_real_host_va(on), on ? buft_name_of(on) : "-",
+                 on ? tensor_data_kind_name(tensor_data_kind_of(on)) : "-",
+                 guard->hidden ? 1 : 0, static_cast<unsigned long long>(hid));
     return 1;
 }
 
@@ -699,6 +739,89 @@ void print_tail_splits(const llama_model* model, const char* when) {
     if (output_w) {
         print_reserve_av_node(output_w, when);
     }
+    print_result_output_srcs(model, when);
+}
+
+void print_result_output_srcs(const llama_model* model, const char* when) {
+    if (!model) {
+        return;
+    }
+    ggml_tensor* node = llama_model_get_tensor(model, "result_output");
+    ggml_tensor* on = llama_model_get_tensor(model, "output_norm.weight");
+    if (!on) {
+        on = llama_model_get_tensor(model, "output_norm");
+    }
+    ggml_tensor* ow = llama_model_get_tensor(model, "output.weight");
+    std::fprintf(stderr, "RESULT_OUTPUT_SRCS when=%s (every MUL_MAT src; hooks=0)\n",
+                 when ? when : "-");
+    int all_host = 1;
+    int src0_va = 0;
+    int src1_va = 0;
+    if (node) {
+        print_reserve_av_node(node, when);
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            ggml_tensor* s = node->src[i];
+            if (!s) {
+                continue;
+            }
+            const int va = tensor_is_real_host_va(s);
+            if (!va) {
+                all_host = 0;
+            }
+            if (i == 0) {
+                src0_va = va;
+            }
+            if (i == 1) {
+                src1_va = va;
+            }
+            std::fprintf(stderr, "%s\n",
+                         format_result_output_src_line(i, s->name, ggml_op_name(s->op),
+                                                       buft_name_of(s),
+                                                       tensor_data_kind_name(tensor_data_kind_of(s)),
+                                                       va)
+                             .c_str());
+            print_reserve_av_node(s, when);
+        }
+    } else {
+        // Compute node is not a model tensor. src0 follows output_norm
+        // (host RMS_NORM after one residual D2H). src1 is output.weight.
+        src0_va = tensor_is_real_host_va(on);
+        src1_va = tensor_is_real_host_va(ow);
+        all_host = src0_va && src1_va;
+        std::fprintf(stderr, "%s\n",
+                     format_result_output_src_line(0, "result_norm", "RMS_NORM",
+                                                   on ? buft_name_of(on) : "-",
+                                                   on ? tensor_data_kind_name(tensor_data_kind_of(on))
+                                                      : "-",
+                                                   src0_va)
+                         .c_str());
+        std::fprintf(stderr, "%s\n",
+                     format_result_output_src_line(1, ow ? ow->name : "output.weight",
+                                                   ow ? ggml_op_name(ow->op) : "NONE",
+                                                   ow ? buft_name_of(ow) : "-",
+                                                   ow ? tensor_data_kind_name(tensor_data_kind_of(ow))
+                                                      : "-",
+                                                   src1_va)
+                         .c_str());
+        std::fprintf(stderr, "RESULT_OUTPUT_SRC i=2 name=none (no more srcs)\n");
+    }
+    std::fprintf(stderr, "%s\n", format_lm_head_proof_line(src0_va, src1_va, all_host).c_str());
+    print_tail_next(when, nullptr);
+}
+
+void print_tail_next(const char* when, const void* logits) {
+    const char* data = "none";
+    const char* buft = "CPU";
+    if (logits) {
+        data = ptr_looks_like_integer_offset(logits) ? "integer_offset" : "in_buffer";
+        buft = ptr_looks_like_integer_offset(logits) ? "offset" : "CPU";
+    }
+    std::fprintf(stderr, "%s\n",
+                 format_tail_next_line(kMeasured5080TailSplitNext, logits ? "logits" : "logits",
+                                       "CPY", buft, data)
+                     .c_str());
+    std::fprintf(stderr, "TAIL_NEXT_WHEN %s logits=%d (node after #642)\n", when ? when : "-",
+                 logits ? 1 : 0);
 }
 
 void print_layer_mul_mat_srcs(const llama_model* model, uint32_t layer, uint32_t* cpu_n,
@@ -1145,6 +1268,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     }
     print_reserve_av_candidates(model, "after_reserve");
     print_tail_splits(model, "after_reserve");
+    print_tail_next("after_reserve", llama_get_logits(ctx));
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);

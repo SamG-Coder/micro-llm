@@ -182,10 +182,9 @@ inline std::string format_tail_collapse_line(const char* output_norm_buft,
                                             const char* output_weight_buft) {
     char buf[384];
     std::snprintf(buf, sizeof(buf),
-                  "TAIL_COLLAPSE residual->norm->output_norm want=CUDA0 "
+                  "TAIL_COLLAPSE residual D2H once at logits want=CPU "
                   "output_norm.weight=%s output.weight=%s "
-                  "(host lm_head uses a real host buffer; no CPU 180K norm "
-                  "after CUDA0 layer-norm; extra_park=0 hooks=0)",
+                  "(host MUL_MAT srcs are real host VAs; extra_park=0 hooks=0)",
                   output_norm_buft && output_norm_buft[0] ? output_norm_buft : "-",
                   output_weight_buft && output_weight_buft[0] ? output_weight_buft : "-");
     return buf;
@@ -217,6 +216,38 @@ inline std::string format_lm_head_host_line(const char* buft, const char* data_k
                   "(output.weight stays host; not CUDA; extra_park=0 hooks=0)",
                   buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-",
                   static_cast<unsigned long long>(nbytes), real_host, mmap);
+    return buf;
+}
+
+inline std::string format_result_output_src_line(int i, const char* name, const char* op,
+                                                const char* buft, const char* data_kind,
+                                                int host_va) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "RESULT_OUTPUT_SRC i=%d name=%s op=%s buft=%s data=%s host_va=%d",
+                  i, name && name[0] ? name : "-", op && op[0] ? op : "-",
+                  buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-",
+                  host_va);
+    return buf;
+}
+
+inline std::string format_tail_next_line(uint32_t n, const char* name, const char* op,
+                                        const char* buft, const char* data_kind) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "TAIL_NEXT n=%u name=%s op=%s buft=%s data=%s "
+                  "(node after result_output; must not read a CUDA offset)",
+                  n, name && name[0] ? name : "-", op && op[0] ? op : "-",
+                  buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-");
+    return buf;
+}
+
+inline std::string format_lm_head_proof_line(int src0_host_va, int src1_host_va, int all_host_va) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "LM_HEAD_PROOF src0_host_va=%d src1_host_va=%d all_host_va=%d "
+                  "(host MUL_MAT srcs are real host VAs)",
+                  src0_host_va, src1_host_va, all_host_va);
     return buf;
 }
 

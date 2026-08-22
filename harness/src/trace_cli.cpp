@@ -20,12 +20,13 @@ int32_t clamp_hybrid_n_gpu_layers(int32_t n) {
 uint32_t hybrid_ffn_park_layers() { return vram_ledger_slots_first().n_parked_ffn; }
 
 std::vector<std::string> hybrid_cpu_tensor_regexes() {
-    // Only MTP + lm_head stay host. output_norm is NOT here — a CPU
-    // 180K output_norm after CUDA0 layer-norm AVs (974b0c3 #641).
-    // Do NOT send 57–63 FFN to CUDA_Host (zero-copy GEMM, 340 splits).
+    // MTP + output_norm + lm_head stay host. 56afdca: CUDA result_norm
+    // as MUL_MAT src0 AVed. Residual D2Hs once, then host RMS_NORM +
+    // host MUL_MAT. Do NOT send 57–63 FFN to CUDA_Host.
     return {
         "nextn",
         "shared_head",
+        "output_norm",
         "output\\.weight",
     };
 }
@@ -58,10 +59,8 @@ std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park) {
     out.push_back("blk\\.[0-9]+\\.attn_q_norm");
     out.push_back("blk\\.[0-9]+\\.attn_k_norm");
     out.push_back("blk\\.[0-9]+\\.ffn_norm");
-    // Collapse residual→norm→output_norm onto CUDA0. CPU output_norm
-    // after CUDA0 norm-63 was the #641 0xC0000005. Tiny F32. Do not
-    // GPU-override output.weight (lm_head stays host).
-    out.push_back("output_norm");
+    // output_norm stays host (see hybrid_cpu). A CUDA result_norm as
+    // result_output src0 AVs. Do not GPU-override output.weight.
     // 16 Gated Attention QKVO (layers 3,7,...,63).
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_q[^k]");
     out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_k");

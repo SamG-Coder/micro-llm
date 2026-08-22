@@ -277,7 +277,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
             hit_output_weight_gpu = true;
         }
     }
-    CHECK(ctx, hit_output_norm);
+    CHECK(ctx, !hit_output_norm);
     CHECK(ctx, !hit_output_weight_gpu);
     CHECK(ctx, classify_backend_buft_name("CUDA_Host") == BuftKind::CudaHost);
     CHECK(ctx, classify_backend_buft_name("CUDA0") == BuftKind::Cuda);
@@ -310,7 +310,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
         }
     }
     CHECK(ctx, cpu_output_weight);
-    CHECK(ctx, !cpu_output_norm);
+    CHECK(ctx, cpu_output_norm);
 
     StreamerConfig scfg;
     scfg.ffn_scratch_bytes = 4096;
@@ -463,6 +463,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, collapse.find("TAIL_COLLAPSE") == 0);
     CHECK(ctx, collapse.find("output_norm.weight=CUDA0") != std::string::npos);
     CHECK(ctx, collapse.find("output.weight=CPU_Mapped") != std::string::npos);
+    CHECK(ctx, collapse.find("residual D2H once") != std::string::npos);
     CHECK(ctx, format_split_why_line(641, "output_norm", "CUDA0").find("SPLIT_WHY n=641") == 0);
     CHECK(ctx, kResultNormBytes == 5120ull * 4ull);
     const std::string tail_hop = format_tail_hop_line("result_norm", "CUDA0", "integer_offset",
@@ -477,6 +478,15 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, lm.find("real_host=1") != std::string::npos);
     CHECK(ctx, lm.find("mmap=0") != std::string::npos);
     CHECK(ctx, format_split_why_line(642, "result_output", "CPU").find("SPLIT_WHY n=642") == 0);
+    CHECK(ctx, kMeasured5080TailSplitNext == 643);
+    const std::string ro =
+        format_result_output_src_line(0, "result_norm", "RMS_NORM", "CPU", "in_buffer", 1);
+    CHECK(ctx, ro.find("RESULT_OUTPUT_SRC i=0") == 0);
+    CHECK(ctx, ro.find("host_va=1") != std::string::npos);
+    const std::string nxt = format_tail_next_line(643, "logits", "CPY", "CPU", "in_buffer");
+    CHECK(ctx, nxt.find("TAIL_NEXT n=643") == 0);
+    CHECK(ctx, nxt.find("name=logits") != std::string::npos);
+    CHECK(ctx, format_lm_head_proof_line(1, 1, 1).find("all_host_va=1") != std::string::npos);
     const std::string av =
         format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
                                  "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);
