@@ -40,6 +40,9 @@ void test_graph_hook_names(TestContext& ctx) {
     g.ne0 = kFfnIntermediate;
     g.ne1 = 1;
     CHECK(ctx, sess.on_tensor(g, true));
+    CHECK(ctx, streamer.resident_ffn_layers() == 1);
+    CHECK(ctx, streamer.compute_layer() == 2);
+    CHECK(ctx, streamer.ffn_vram_bytes() == scfg.ffn_scratch_bytes);
     CHECK(ctx, sess.on_tensor(g, false));
 
     GraphTensorView u;
@@ -49,6 +52,8 @@ void test_graph_hook_names(TestContext& ctx) {
     u.ne1 = 1;
     CHECK(ctx, sess.on_tensor(u, true));
     CHECK(ctx, sess.on_tensor(u, false));
+    CHECK(ctx, streamer.resident_ffn_layers() == 0);
+    CHECK(ctx, streamer.ffn_vram_bytes() == 0);
     CHECK(ctx, hooks.table().layer_was_hooked(2));
     CHECK(ctx, hooks.table().channel(2, 10).n_fired == 1);
     CHECK(ctx, sess.ffn_gate_hits() == 1);

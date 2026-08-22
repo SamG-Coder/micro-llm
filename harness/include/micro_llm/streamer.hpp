@@ -3,9 +3,10 @@
 // Trace-path streamer. Not a 27B engine.
 //
 // Pin: CUDA + 16 Gated Attention blocks + KV + DeltaNet state + embed.
-// Stream FFNs with TWO scratch buffers + async prefetch of n+1.
-// Host pages PINNED (required for prefetch to overlap).
-// Double-buffer peak ~300MB (two Q4 FFN layers).
+// Park as many FFN layers as fit under 14GB (GA+KV + 0.9 + parked + stream).
+// Stream UNPARKED FFN one layer at a time (host ping-pong, one VRAM slot).
+// Never park all 64. ngl is not the pin (not 16, not 99). 15.2 is hard.
+// DeltaNet stays CPU. MTP extra block is not in this stack.
 // Do NOT pin lm_head next to embed; lm_head only at logits.
 // No mid-session shrink.
 
@@ -32,7 +33,9 @@ struct StreamerConfig {
     static constexpr uint32_t kPackedAlign = kTensorAlign;
     size_t ffn_scratch_bytes = kQ4FfnLayerBytes;
     uint32_t n_layers = kNLayers;
+    uint32_t n_parked_ffn = 0;  // layers [0, n) stay on CUDA. Hour sets this.
     bool pin_host_pages = true;
+    bool log_cuda_ffn = false;  // park line + first-token binds, then counts
 };
 
 class TraceStreamer {
@@ -51,7 +54,8 @@ public:
     bool is_pinned(PinTarget t) const;
     bool pin_resident();  // CUDA + 16 GA + KV + DeltaNet + embed
 
-    // FFN double-buffer. prefetch n+1 into the idle scratch.
+    // Host ping-pong: prefetch n+1 into the idle HOST scratch.
+    // bind occupies the single VRAM FFN workspace; evict releases it.
     bool prefetch_ffn(uint32_t layer);
     bool bind_ffn(uint32_t layer);
     bool evict_ffn(uint32_t layer);
@@ -64,7 +68,26 @@ public:
     bool host_pages_pinned() const { return host_pages_pinned_; }
 
     size_t scratch_bytes() const { return cfg_.ffn_scratch_bytes; }
+    // Host double-buffer peak (two scratch pages). Not VRAM.
     size_t peak_ffn_bytes() const { return 2u * cfg_.ffn_scratch_bytes; }
+    // VRAM: one FFN workspace, never two parked layers.
+    size_t peak_ffn_vram_bytes() const { return cfg_.ffn_scratch_bytes; }
+    size_t ffn_vram_bytes() const {
+        return compute_layer_ != ~0u ? cfg_.ffn_scratch_bytes : 0;
+    }
+    uint32_t resident_ffn_layers() const { return compute_layer_ != ~0u ? 1u : 0u; }
+    uint32_t n_parked_ffn() const { return cfg_.n_parked_ffn; }
+    void set_n_parked_ffn(uint32_t n) {
+        cfg_.n_parked_ffn = n < kNLayers ? n : (kNLayers - 1u);
+    }
+    bool ffn_is_parked(uint32_t layer) const { return layer < cfg_.n_parked_ffn; }
+    uint64_t parked_ffn_bytes() const {
+        return static_cast<uint64_t>(cfg_.n_parked_ffn) * cfg_.ffn_scratch_bytes;
+    }
+    uint64_t cuda_bind_count() const { return cuda_bind_count_; }
+    void set_log_cuda_ffn(bool on) { cfg_.log_cuda_ffn = on; }
+    uint64_t card_stack_bytes() const { return hour_park_stream_card_bytes(cfg_.n_parked_ffn); }
+    bool card_stack_fits() const { return hour_park_stream_fits(cfg_.n_parked_ffn); }
     const uint8_t* scratch(int i) const { return scratch_[i].data(); }
 
     // lm_head lives only around logits.
@@ -96,6 +119,7 @@ private:
     bool host_pages_pinned_ = false;
     bool lm_head_resident_ = false;
     bool shrink_attempted_ = false;
+    uint64_t cuda_bind_count_ = 0;
 };
 
 inline constexpr uint32_t pin_bit(PinTarget t) {

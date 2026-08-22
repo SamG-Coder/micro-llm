@@ -11,6 +11,8 @@ export const SAMPLE_WEIGHT_BYTES = Math.trunc(10.8 * GIB);
 export const SAMPLE_BASE_CTX = 8192;
 // Pinned 16 GA blocks at Q4. Live card stack, not the host GGUF file.
 export const PINNED_GA_WEIGHT_BYTES = Math.trunc(0.6 * GIB);
+export const PINNED_GA_KV_BYTES = Math.trunc(6.8 * GIB);
+export const Q4_FFN_WORKSPACE_BYTES = 150 * 1024 * 1024;
 
 export function kvBytes(ctx, perToken = KV_BYTES_PER_TOKEN_FP16) {
   return ctx * perToken;
@@ -21,8 +23,9 @@ export function serveStackBytes({
   ctx = SAMPLE_BASE_CTX,
   cudaBytes = CUDA_SCRATCH_BYTES,
   kvPerToken = KV_BYTES_PER_TOKEN_FP16,
+  ffnWorkspaceBytes = 0,
 } = {}) {
-  return weightBytes + cudaBytes + kvBytes(ctx, kvPerToken);
+  return weightBytes + cudaBytes + kvBytes(ctx, kvPerToken) + ffnWorkspaceBytes;
 }
 
 // Green under 15.2. Yellow inside 0.5GB of the cap. Red if serve_ok is false or vision is on.
@@ -31,8 +34,9 @@ export function barState({
   ctx = SAMPLE_BASE_CTX,
   serveOk = true,
   vision = false,
+  ffnWorkspaceBytes = 0,
 } = {}) {
-  const stack = serveStackBytes({ weightBytes, ctx });
+  const stack = serveStackBytes({ weightBytes, ctx, ffnWorkspaceBytes });
   const usable = SERVE_USABLE_HEADLESS_BYTES;
   let color = "green";
   if (!serveOk || vision || stack > usable) {
@@ -46,6 +50,7 @@ export function barState({
     weightBytes,
     cudaBytes: CUDA_SCRATCH_BYTES,
     kvBytes: kvBytes(ctx),
+    ffnWorkspaceBytes,
     ctx,
     serveOk,
     vision,
@@ -68,12 +73,14 @@ export function sampleBudgetAtToken(tokenIndex) {
   });
 }
 
-// Live card stack: pinned GA weights + ~0.9 CUDA + KV. Not 10.8, not host GGUF.
+// Live card stack: pinned GA + ~0.9 CUDA + one FFN workspace + KV.
+// Not 10.8, not host GGUF, not 64 parked FFNs.
 export function liveCardStackAtToken(tokenIndex, extra = {}) {
   return barState({
     weightBytes: extra.weightBytes ?? PINNED_GA_WEIGHT_BYTES,
     ctx: (extra.baseCtx ?? SAMPLE_BASE_CTX) + tokenIndex,
     serveOk: true,
     vision: false,
+    ffnWorkspaceBytes: extra.ffnWorkspaceBytes ?? Q4_FFN_WORKSPACE_BYTES,
   });
 }

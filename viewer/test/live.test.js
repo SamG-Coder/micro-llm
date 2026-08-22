@@ -41,6 +41,10 @@ describe("live attach", () => {
     });
     assert.equal(attach.kind, "attach");
     assert.equal(attach.attach.weightBytes, PINNED_GA_WEIGHT_BYTES);
+
+    const stats = decodeHostPayload({ type: "live-stats", tokensPerSec: 4.25, nTokens: 32 });
+    assert.equal(stats.kind, "stats");
+    assert.equal(stats.tokensPerSec, 4.25);
   });
 
   it("installs chrome.webview message and __htr1Push", () => {

@@ -51,21 +51,38 @@ int run_hour(micro_llm::LiveForwardConfig cfg, bool use_stub, bool push_ui) {
     cfg.abort = &hotspot_live_abort();
     if (push_ui) {
         const uint64_t ga = pinned_ga_weight_bytes();
+        const uint64_t ffn_ws = streamed_ffn_workspace_bytes();
+        const uint32_t n_park = cfg.n_parked_ffn ? cfg.n_parked_ffn : hybrid_ffn_park_layers();
         const std::string attach =
             std::string("{\"type\":\"live-attach\",\"title\":\"live hour\",") +
             "\"weightBytes\":" + std::to_string(ga) +
             ",\"cudaBytes\":" + std::to_string(kCudaScratchBytes) +
+            ",\"ffnWorkspaceBytes\":" + std::to_string(ffn_ws) +
+            ",\"ffnParkedBytes\":" +
+            std::to_string(static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes) +
+            ",\"nParkedFfn\":" + std::to_string(n_park) +
+            ",\"pinnedGaKvBytes\":" + std::to_string(pinned_ga_kv_bytes()) +
             ",\"kvBytesPerToken\":" + std::to_string(kKvBytesPerTokenFp16) +
             ",\"ctx\":" + std::to_string(cfg.n_ctx) +
-            ",\"nPredict\":" + std::to_string(cfg.n_predict) + "}";
+            ",\"nPredict\":" + std::to_string(cfg.n_predict) +
+            ",\"streamFfn\":true,\"nGpuLayers\":0,\"loadMtp\":false}";
         hotspot_live_push_json(attach);
         cfg.on_htr1 = [](const uint8_t* rec, size_t n) { hotspot_live_push_htr1(rec, n); };
+        cfg.on_stats = [](double tps, uint32_t ntok) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          "{\"type\":\"live-stats\",\"tokensPerSec\":%.3f,\"nTokens\":%u}", tps,
+                          ntok);
+            hotspot_live_push_json(buf);
+        };
     }
 
     StreamerConfig scfg;
     if (use_stub) {
         scfg.ffn_scratch_bytes = 4096;
     }
+    scfg.n_parked_ffn = cfg.n_parked_ffn ? cfg.n_parked_ffn : hybrid_ffn_park_layers();
+    scfg.log_cuda_ffn = !use_stub;
     TraceStreamer streamer(scfg);
     TraceHooks hooks;
     auto backend = make_live_forward(use_stub ? "stub" : "llama");

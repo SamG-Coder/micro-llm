@@ -97,11 +97,17 @@ exclusive. When `--model` is set without `--n-predict`, n-predict is 20000
 after EOS. `--out` writes MLPT scores; every 2000 tokens the table is
 written to `<out>.tmp` and atomically renamed to `<out>` (no mid-run pack).
 
-Hybrid pin: `n_gpu_layers=99` (CUDA by default). Tensor buffer overrides
-pull FFN (gate/up/down) and DeltaNet (`ssm_*`, `attn_qkv`, `attn_gate`)
-to CPU. Gated Attention on layers 3,7,...,63 plus KV stay CUDA. Not
-`ngl=16`. Flash-attn and `op_offload` are off (FA + CPU FFN split AVs).
-`n_batch=512`, `n_ubatch=32`. CUDA F32 activations are D2H before the hook.
+Hybrid pin is tensor overrides, not ngl. `n_gpu_layers=0` (CPU default).
+Not `ngl=16` (wrong 16 layers) and not `ngl=99` (parks the file).
+Gated Attention on layers 3,7,...,63 plus KV stay CUDA. Park as many FFN
+layers as fit under 14GB (GA+KV ~6.9 + 0.9 + parked + one stream slot).
+Never all 64. Stream the rest one layer at a time. DeltaNet stays host.
+MTP off. `block_count=65` / `nextn_predict_layers=1` is the extra MTP
+block — hook ring stays 64. Flash-attn stays off. `op_offload` does not
+move FFN compute (30328). `n_batch=512`, `n_ubatch=32`. Device fire tap
+on live CUDA gate/up; do not dequant the layer to host just to score it.
+Stderr proof: `ffn_cuda_park`, `ffn_cuda_bind`, `tokens/s=`. Hotspot
+shows tok/s. Checkpoint is the ~18MB MLPT; do not pack it.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
 to the exe). The page is a dark star field: quiet token streaks + dim glyphs,
@@ -151,8 +157,10 @@ cmake -S harness -B harness/build \
 cmake --build harness/build -j
 ```
 
-3. Run the hour. Hybrid pin: ngl=99, FFN + DeltaNet weights on CPU, 16 GA
-   + KV on CUDA. Window opens on Windows. Decode is on a worker thread.
+3. Run the hour. Hybrid pin: ngl=0, 16 GA + KV on CUDA, as many FFN
+   layers as fit parked on CUDA, unparked FFN streamed one at a time.
+   Window opens on Windows. Decode is on a worker thread. Look for
+   `ffn_cuda_park` / `ffn_cuda_bind` / `tokens/s=` on stderr.
 
 ```bash
 ./harness/build/micro-llm-trace \
@@ -196,7 +204,8 @@ floor) are valid; 10445 is not.
 Verified: llama.cpp `llama_context_params.cb_eval`
 (`ggml_backend_sched_eval_callback`) after each graph node. `qwen35.cpp`
 names the sites we need (`ffn_gate-L`, `ffn_up-L`, `attn_residual-L`,
-`result_output`). After each FFN: device hook on gate/up. After each
+`result_output`). After each FFN: device hook on gate/up while that layer's workspace is
+on the card, then evict. After each
 DeltaNet pack: relative residual. Vocab: prompt, sampled, top-k.
 `after_logits` for the floor bitset.
 

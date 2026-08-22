@@ -109,9 +109,9 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
     }
     if (ask) {
         if (site == GraphHookSite::FfnGate || site == GraphHookSite::FfnUp) {
-            if (layer >= 0) {
+            if (layer >= 0 && static_cast<uint32_t>(layer) < kNLayers) {
                 const uint32_t next = static_cast<uint32_t>(layer) + 1;
-                if (next < kNLayers) {
+                if (next < kNLayers && !streamer_.ffn_is_parked(next)) {
                     streamer_.prefetch_ffn(next);
                 }
                 streamer_.bind_ffn(static_cast<uint32_t>(layer));
@@ -171,7 +171,9 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
             }
             (void)ok;
         }
-        streamer_.evict_ffn(static_cast<uint32_t>(layer));
+        if (!streamer_.ffn_is_parked(static_cast<uint32_t>(layer))) {
+            streamer_.evict_ffn(static_cast<uint32_t>(layer));
+        }
         pending_gate_layer_ = -1;
         device_gate_ = nullptr;
         return true;

@@ -113,11 +113,19 @@ Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
 ## Hybrid CUDA hour (pin, don't ngl)
 
-llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). We do not use it. `n_gpu_layers = 99` puts tensors on CUDA by default. Tensor buffer overrides pull FFN (`ffn_gate` / `ffn_up` / `ffn_down`) and DeltaNet (`ssm_*`, `attn_qkv`, `attn_gate`) to CPU. Gated Attention on layers 3,7,11,...,63 plus KV stay CUDA. Do not load the host GGUF onto the 5080.
+llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). `-ngl 99` parks the file. Neither is the pin.
 
-Flash-attn + CPU FFN split has AVed; the hour disables FA and `op_offload`. `n_batch=512`, `n_ubatch=32`. Hooks D2H CUDA F32 activations — never read a device pointer as host.
+The pin is tensor buffer overrides, not ngl. `n_gpu_layers = 0`. `-ngl 99` parks the file; `-ngl 16` is the wrong 16 layers. Gated Attention QKVO on layers 3,7,...,63 plus KV stay CUDA. DeltaNet stays on the host. MTP stays off (`load_mtp` / `keep_mtp` false). A GGUF with `block_count=65` and `nextn_predict_layers=1` is the same 64-layer hybrid plus an extra MTP block — do not count that block in the hook ring or the card stack.
 
-Live card stack on the hotspot bar is pinned GA weights + ~0.9 CUDA + KV. Not the labeled 10.8 sample, not the host file size.
+Park as many FFN layers as fit under 14GB: GA+KV (~6.9) + 0.9 CUDA + parked FFN + one stream slot. 15.2 is still hard. Never park all 64. Stream the unparked FFN one layer at a time (host ping-pong two scratch buffers). `op_offload` does **not** move FFN compute — 30328 proved that (`CUDA0 model buffer` stayed ~2GB while `CPU_Mapped` held the FFN pile). Parked FFN **weights** go on CUDA via overrides so those matmuls actually run on the card.
+
+Flash-attn stays off (FA + CPU split AVed). `n_batch=512`, `n_ubatch=32`.
+
+When the FFN is on the card, tap `|SiLU(gate)*up|` there (`on_ffn_activations_device` / `persistent_cuda_reduce`), then evict the stream slot. Do not dequant the layer to host just to score it. Same HTR1 bits / fire eps.
+
+The exe must prove FFN ran on CUDA: `ffn_cuda_park` / `ffn_cuda_bind` lines and a `tokens/s=` line. The hotspot shows tok/s. Direction paint is heading = hottest layer up the 64-layer tower, color = pack vs FFN, length = bits fired. Zero bits, no streak. No NSEW.
+
+Live card stack is pinned GA + parked FFN + ~0.9 CUDA + one stream slot + KV. Not the labeled 10.8 sample, not the host file size, not 64 parked FFNs. Mid-hour checkpoint is the ~18MB MLPT scores file. Do not pack it.
 
 ## Export
 

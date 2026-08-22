@@ -30,13 +30,16 @@ struct LiveForwardConfig {
     uint32_t n_ubatch = 32;
     uint32_t checkpoint_every = 2000;
     bool load_vision = false;  // job is text coding assistant
-    bool load_mtp = false;
+    bool load_mtp = false;     // MTP extra GGUF block stays off
     bool continue_after_eos = true;
-    bool disable_flash_attn = true;
-    bool disable_op_offload = true;
-    // Hybrid pin: 99 = CUDA by default. Not ngl=16 (wrong 16 layers).
-    int32_t n_gpu_layers = 99;
+    bool disable_flash_attn = true;  // FA + CPU split AVed; keep FA off
+    bool disable_op_offload = true;  // 30328: op_offload did not park FFN compute
+    bool pack_checkpoint = false;    // scores only; never pack the ~18MB MLPT
+    // ngl is not the pin. 0 = CPU default. Not 16, not 99.
+    int32_t n_gpu_layers = 0;
+    uint32_t n_parked_ffn = 0;  // 0 = use ffn_park_layers_that_fit() in the hour
     std::function<void(const uint8_t* rec, size_t nbytes)> on_htr1;
+    std::function<void(double tokens_per_sec, uint32_t n_tokens)> on_stats;
     std::atomic<bool>* abort = nullptr;
 };
 

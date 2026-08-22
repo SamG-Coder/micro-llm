@@ -200,6 +200,7 @@ add_executable(micro_llm_tests
   tests/test_hotspot_ui.cpp
   tests/test_hook_ring.cpp
   tests/test_hour_cli.cpp
+  tests/test_ffn_stream.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(micro_llm_tests PRIVATE micro_llm micro_llm_ui)
