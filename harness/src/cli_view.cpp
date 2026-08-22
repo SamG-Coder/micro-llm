@@ -10,6 +10,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     int argc = 0;
