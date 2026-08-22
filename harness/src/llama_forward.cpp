@@ -292,83 +292,10 @@ bool attach_q4_to_ggml_slot(ggml_backend_buffer_t buf, ggml_tensor* t, const voi
     return true;
 }
 
-struct SlotPackOff {
-    size_t a = 0;
-    size_t b = 0;
-};
-
-bool snapshot_and_attach(ggml_backend_buffer_t buf, ggml_tensor* t, size_t* off) {
-    if (!buf || !t || !off) {
-        return false;
-    }
-    const BuftKind kind = classify_backend_buft_name(buft_name_of(t));
-    if (kind == BuftKind::Cuda) {
-        return true;
-    }
-    const size_t nbytes = ggml_nbytes(t);
-    if (nbytes == 0) {
-        return false;
-    }
-    std::vector<uint8_t> host(nbytes);
-    ggml_backend_tensor_get(t, host.data(), 0, nbytes);
-    *off = align_up(*off, kTensorAlign);
-    if (!attach_q4_to_ggml_slot(buf, t, host.data(), nbytes, *off)) {
-        return false;
-    }
-    *off += nbytes;
-    return true;
-}
-
-// Collapse a CPU/CPU_Mapped src or view onto leftover A/B space only.
-// Ren owns extra CUDA weight buffers — do not alloc those here.
-uint32_t collapse_src_view_into_slot(const llama_model* model, uint32_t layer,
-                                     ggml_backend_buffer_t buf, size_t* off) {
-    static const char* kHop[] = {"ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
-                                 "ffn_out.weight", "ffn_gate.scale", "ffn_up.scale",
-                                 "ffn_down.scale", "attn_post_norm.weight"};
-    if (!buf || !off) {
-        return 0;
-    }
-    uint32_t n = 0;
-    for (const char* suffix : kHop) {
-        ggml_tensor* t = find_layer_tensor(model, layer, suffix);
-        if (!t) {
-            continue;
-        }
-        ggml_tensor* vs = t->view_src;
-        if (classify_backend_buft_name(buft_name_of(t)) != BuftKind::Cuda) {
-            if (snapshot_and_attach(buf, t, off)) {
-                ++n;
-                std::fprintf(stderr, "FFN_HOP_COLLAPSE layer=%u tensor=%s into_slot=1\n",
-                             layer, t->name);
-            } else {
-                std::fprintf(stderr,
-                             "FFN_HOP_COLLAPSE layer=%u tensor=%s into_slot=0 "
-                             "(leftover A/B only; no extra buffer)\n",
-                             layer, t->name);
-            }
-        }
-        if (vs && classify_backend_buft_name(buft_name_of(vs)) != BuftKind::Cuda) {
-            if (snapshot_and_attach(buf, vs, off)) {
-                ++n;
-                std::fprintf(stderr, "FFN_HOP_COLLAPSE layer=%u tensor=%s into_slot=1\n",
-                             layer, vs->name);
-            } else {
-                std::fprintf(stderr,
-                             "FFN_HOP_COLLAPSE layer=%u tensor=%s into_slot=0 "
-                             "(leftover A/B only; no extra buffer)\n",
-                             layer, vs->name);
-            }
-        }
-    }
-    return n;
-}
-
 uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft,
                                              GgmlSlotGuard* slots,
                                              std::vector<StreamedFfnHost>* streamed,
-                                             uint32_t n_park, PerfClocks* clocks,
-                                             SlotPackOff* leftover) {
+                                             uint32_t n_park, PerfClocks* clocks) {
     (void)gpu_buft;  // Ren owns extra CUDA weight buffers. This bind uses A/B.
     if (!slots || !streamed || streamed->empty()) {
         return 0;
@@ -412,13 +339,6 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
                      static_cast<unsigned long long>(packed));
         std::fprintf(stderr, "%s\n",
                      format_ggml_tensor_bind_line(layer, packed, ok, ok).c_str());
-        if (leftover) {
-            if (kind == kStreamSlotA) {
-                leftover->a = off;
-            } else if (kind == kStreamSlotB) {
-                leftover->b = off;
-            }
-        }
     };
     for (StreamedFfnHost& h : *streamed) {
         if (!h.tensor || h.bytes == 0) {
@@ -836,16 +756,8 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
                                        streamed_cuda_host_n)
                      .c_str());
     register_streamed_layer_parts(streamer, streamed_hosts);
-    SlotPackOff leftover;
     const uint32_t ggml_bound = bind_streamed_tensors_to_ggml_slots(
-        gpu_buft, &ggml_slots, &streamed_hosts, n_park, &clocks, &leftover);
-    uint32_t collapsed = 0;
-    if (ggml_slots.a) {
-        collapsed += collapse_src_view_into_slot(model, kNLayers - 1, ggml_slots.a, &leftover.a);
-    }
-    if (ggml_slots.b) {
-        collapsed += collapse_src_view_into_slot(model, kNLayers - 2, ggml_slots.b, &leftover.b);
-    }
+        gpu_buft, &ggml_slots, &streamed_hosts, n_park, &clocks);
     parked_cuda_n = 0;
     streamed_cpu_n = 0;
     streamed_cuda_n = 0;
@@ -853,10 +765,9 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     collect_streamed_ffn_hosts(model, n_park, nullptr, &parked_cuda_n, &streamed_cpu_n,
                               &streamed_cuda_n, &streamed_cuda_host_n, false, false);
     std::fprintf(stderr, "FFN_PLACE_AFTER_BIND parked_cuda=%u streamed_cpu=%u streamed_cuda=%u "
-                         "streamed_cuda_host=%u ggml_bound=%u hop_collapse=%u "
-                         "(A/B leftover only; Ren owns extra CUDA weight buffers)\n",
-                 parked_cuda_n, streamed_cpu_n, streamed_cuda_n, streamed_cuda_host_n, ggml_bound,
-                 collapsed);
+                         "streamed_cuda_host=%u ggml_bound=%u hop_collapse=0 "
+                         "(no leftover collapse; Ren sizes A/B; extra_park=0)\n",
+                 parked_cuda_n, streamed_cpu_n, streamed_cuda_n, streamed_cuda_host_n, ggml_bound);
     clocks.add_cuda_ffn_binds(parked_cuda_n);
     clocks.set_real_h2d(ggml_bound > 0 && streamed_cuda_host_n == 0);
     uint32_t cpu_63 = 0;
