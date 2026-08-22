@@ -82,6 +82,8 @@ inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t 
 
 // Streamed layer → ggml slot. 63 → A, 62 → B. Other overflow stays CPU
 // (op_offload stream). 2 (extra park buffer) is illegal. -1 = parked.
+// All three Q4s (gate, up, down) must fit in the 160 MiB slot. Packing
+// norms/view_src first is what left ffn_down on CPU_Mapped (9a5f0df).
 inline constexpr int kStreamSlotParked = -1;
 inline constexpr int kStreamSlotA = 0;
 inline constexpr int kStreamSlotB = 1;

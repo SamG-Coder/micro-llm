@@ -109,7 +109,7 @@ inline constexpr SplitLedger split_ledger_trace_off_park_stream(
     s.backend_transition = 1;  // CUDA stack -> host lm_head
     s.unsupported_op = 0;
     (void)n_stream;
-    // Leftover CPU/CUDA_Host MUL_MAT srcs (blk.63 ffn_gate/up). 0 after bind.
+    // Leftover CPU / CPU_Mapped MUL_MAT srcs (blk.63 ffn_down). 0 after bind.
     s.placement_buffer = cpu_ffn_srcs;
     s.other = 0;
     return s;
@@ -166,7 +166,33 @@ inline bool name_is_ffn_mul_mat_src(const char* tensor) {
     }
     const std::string t(tensor);
     return t.find("ffn_gate") != std::string::npos || t.find("ffn_up") != std::string::npos ||
-           t.find("ffn_down") != std::string::npos;
+           t.find("ffn_down") != std::string::npos || t.find("ffn_out") != std::string::npos;
+}
+
+// The three Q4 GEMM weights only — not scales, not norms. These must all
+// fit in one ~160 MiB slot. 9a5f0df packed extras first; down stayed
+// CPU_Mapped.
+inline bool name_is_slot_q4_weight(const char* tensor) {
+    if (!name_is_ffn_mul_mat_src(tensor)) {
+        return false;
+    }
+    const std::string t(tensor);
+    if (t.find("scale") != std::string::npos) {
+        return false;
+    }
+    if (t.size() >= 2 && t.compare(t.size() - 2, 2, "_s") == 0) {
+        return false;
+    }
+    return t.find("ffn_norm") == std::string::npos;
+}
+
+inline bool buft_is_cpu_mapped(const char* n) {
+    if (!n || n[0] == '\0') {
+        return false;
+    }
+    const std::string s(n);
+    return s.find("Mapped") != std::string::npos || s.find("MAPPED") != std::string::npos ||
+           s.find("mapped") != std::string::npos;
 }
 
 inline bool name_is_ffn_input_norm(const char* tensor) {
@@ -195,7 +221,7 @@ inline std::string format_split_why_line(uint32_t n_splits, const char* last_ten
     char buf[384];
     std::snprintf(buf, sizeof(buf),
                   "SPLIT_WHY n=%u bs=1 last=%s last_buft=%s "
-                  "(532>340 = extra CPU hops on streamed FFN src/view)",
+                  "(638 = CPU_Mapped blk.63 ffn_down; gate/up still host)",
                   n_splits, last_tensor && last_tensor[0] ? last_tensor : "-",
                   last_buft && last_buft[0] ? last_buft : "-");
     return buf;
@@ -234,6 +260,11 @@ inline constexpr const char* kStreamedBindSuffixes[] = {
     "ffn_gate",
     "ffn_up",
     "ffn_down",
+    "ffn_out.weight",
+    "ffn_out",
+    "ffn_gate_s",
+    "ffn_up_s",
+    "ffn_down_s",
     "ffn_norm.weight",
     "attn_post_norm.weight",
     "post_attention_norm.weight",
@@ -271,6 +302,11 @@ inline SplitCauseKind classify_split_cause(const char* tensor, const char* buft,
     const BuftKind bk = classify_backend_buft_name(buft);
     if (bk == BuftKind::CudaHost) {
         return SplitCauseKind::CudaHostToCuda;
+    }
+    // CPU_Mapped is a host alias of the GGUF mmap, not an unsupported op
+    // and not a CUDA_Host↔CUDA hop. Graph reserve still sees host.
+    if (buft_is_cpu_mapped(buft)) {
+        return SplitCauseKind::Placement;
     }
     const std::string t = tensor ? tensor : "";
     if (name_is_ffn_mul_mat_src(tensor) || name_is_ffn_input_norm(tensor)) {

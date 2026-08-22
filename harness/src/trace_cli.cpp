@@ -44,6 +44,8 @@ std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park) {
         out.push_back("blk\\." + n + "\\.ffn_up");
         out.push_back("blk\\." + n + "\\.ffn_down");
     }
+    // Do NOT GPU-override 57–63 FFN (extra park / extra CUDA weight
+    // buffers). 63 gate+up+down bind into slot A; 62 into B.
     // DeltaNet on CUDA. Leaving it on host splits every layer against parked FFN.
     out.push_back("blk\\.[0-9]+\\.ssm_");
     out.push_back("blk\\.[0-9]+\\.attn_qkv");

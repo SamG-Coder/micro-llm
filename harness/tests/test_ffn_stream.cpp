@@ -85,8 +85,20 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, sline.find("placement/buffer=") != std::string::npos);
     CHECK(ctx, classify_split_cause("blk.63.ffn_gate.weight", "CPU", true) ==
                    SplitCauseKind::Placement);
+    CHECK(ctx, classify_split_cause("blk.63.ffn_down.weight", "CPU_Mapped", true) ==
+                   SplitCauseKind::Placement);
+    CHECK(ctx, classify_split_cause("blk.63.ffn_down.weight", "CPU_Mapped", true) !=
+                   SplitCauseKind::UnsupportedOp);
+    CHECK(ctx, classify_split_cause("blk.63.ffn_down.weight", "CPU_Mapped", true) !=
+                   SplitCauseKind::CudaHostToCuda);
     CHECK(ctx, classify_split_cause("blk.63.ffn_up.weight", "CUDA_Host", true) ==
                    SplitCauseKind::CudaHostToCuda);
+    CHECK(ctx, buft_is_cpu_mapped("CPU_Mapped"));
+    CHECK(ctx, !buft_is_cpu_mapped("CUDA0"));
+    CHECK(ctx, name_is_slot_q4_weight("blk.63.ffn_down.weight"));
+    CHECK(ctx, name_is_slot_q4_weight("blk.63.ffn_out.weight"));
+    CHECK(ctx, !name_is_slot_q4_weight("blk.63.ffn_down.scale"));
+    CHECK(ctx, !name_is_slot_q4_weight("blk.63.ffn_norm.weight"));
     CHECK(ctx, classify_split_cause("output.weight", "CPU", true) ==
                    SplitCauseKind::BackendTransition);
     CHECK(ctx, classify_split_cause("cb_eval", "set", false) == SplitCauseKind::HookCallback);
@@ -100,9 +112,12 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, causes.find("SPLIT_CAUSE kind=unsupported_op") != std::string::npos);
     CHECK(ctx, causes.find("SPLIT_CAUSE kind=other") != std::string::npos);
     const std::string why =
-        format_split_why_line(kMeasured5080ReserveSplits, "blk.63.ffn_gate.weight", "CPU");
-    CHECK(ctx, why.find("SPLIT_WHY n=532") == 0);
-    CHECK(ctx, why.find("last=blk.63.ffn_gate.weight") != std::string::npos);
+        format_split_why_line(kMeasured5080ReserveSplits, "blk.63.ffn_down.weight",
+                             "CPU_Mapped");
+    CHECK(ctx, why.find("SPLIT_WHY n=638") == 0);
+    CHECK(ctx, why.find("last=blk.63.ffn_down.weight") != std::string::npos);
+    CHECK(ctx, why.find("last_buft=CPU_Mapped") != std::string::npos);
+    CHECK(ctx, kMeasured5080ReserveSplits532 == 532);
     CHECK(ctx, kMeasured5080Cuda0BindMiB == 13110ull);
     SplitLedger hooked = sl;
     hooked.trace_off = true;
@@ -174,7 +189,11 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, !catch_all_ffn);
     bool hit56 = false;
     bool hit57 = false;
+    bool hit59 = false;
+    bool hit61 = false;
+    bool hit62 = false;
     bool hit63 = false;
+    bool hit63_scale = false;
     for (const auto& p : gpu) {
         if (p.find("ffn_") == std::string::npos) {
             continue;
@@ -182,11 +201,19 @@ void test_ffn_stream_budget(TestContext& ctx) {
         const std::regex re(p);
         if (std::regex_search(std::string("blk.56.ffn_gate.weight"), re)) hit56 = true;
         if (std::regex_search(std::string("blk.57.ffn_gate.weight"), re)) hit57 = true;
+        if (std::regex_search(std::string("blk.59.ffn_up.weight"), re)) hit59 = true;
+        if (std::regex_search(std::string("blk.61.ffn_down.weight"), re)) hit61 = true;
+        if (std::regex_search(std::string("blk.62.ffn_gate.weight"), re)) hit62 = true;
         if (std::regex_search(std::string("blk.63.ffn_down.weight"), re)) hit63 = true;
+        if (std::regex_search(std::string("blk.63.ffn_gate.scale"), re)) hit63_scale = true;
     }
     CHECK(ctx, hit56);
     CHECK(ctx, !hit57);
+    CHECK(ctx, !hit59);
+    CHECK(ctx, !hit61);
+    CHECK(ctx, !hit62);
     CHECK(ctx, !hit63);
+    CHECK(ctx, !hit63_scale);
     bool hit_post63 = false;
     for (const auto& p : gpu) {
         if (p.find("post_norm") == std::string::npos &&
@@ -203,6 +230,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, classify_backend_buft_name("CUDA_Host") == BuftKind::CudaHost);
     CHECK(ctx, classify_backend_buft_name("CUDA0") == BuftKind::Cuda);
     CHECK(ctx, classify_backend_buft_name("CPU") == BuftKind::Cpu);
+    CHECK(ctx, classify_backend_buft_name("CPU_Mapped") == BuftKind::Cpu);
     const std::string place = format_ffn_place_line(171, 21, 0, 0);
     CHECK(ctx, place.find("streamed_cuda_host=0") != std::string::npos);
 

@@ -115,6 +115,8 @@ struct StreamedFfnHost {
     const void* host = nullptr;
     size_t bytes = 0;
     ggml_tensor* tensor = nullptr;
+    ggml_tensor* view_src = nullptr;
+    bool slot_q4 = false;
     std::vector<uint8_t> host_copy;
 };
 
@@ -180,32 +182,21 @@ void collect_streamed_ffn_hosts(const llama_model* model, uint32_t n_park,
             }
             continue;
         }
+        const int slot_kind = ggml_stream_slot_kind(layer, n_park);
+        const bool log_slot = log_tensors && (slot_kind == kStreamSlotA || slot_kind == kStreamSlotB);
         for (uint32_t i = 0; i < kStreamedBindSuffixCount; ++i) {
             ggml_tensor* t = find_layer_tensor(model, layer, kStreamedBindSuffixes[i]);
+            if (log_slot) {
+                std::fprintf(stderr,
+                             "FFN_NAME_TRY layer=%u suffix=%s found=%d name=%s buft=%s "
+                             "slot_q4=%d nbytes=%llu\n",
+                             layer, kStreamedBindSuffixes[i], t ? 1 : 0, t ? t->name : "-",
+                             t ? buft_name_of(t) : "-",
+                             t && name_is_slot_q4_weight(t->name) ? 1 : 0,
+                             t ? static_cast<unsigned long long>(ggml_nbytes(t)) : 0ull);
+            }
             if (!t || saw(t)) {
                 continue;
-            }
-            if (t->view_src && !saw(t->view_src)) {
-                ggml_tensor* src = t->view_src;
-                const BuftKind sk = classify_backend_buft_name(buft_name_of(src));
-                if (sk == BuftKind::CudaHost) {
-                    ++(*streamed_cuda_host);
-                } else if (sk == BuftKind::Cuda) {
-                    ++(*streamed_cuda);
-                } else {
-                    ++(*streamed_cpu);
-                }
-                if (log_tensors) {
-                    std::fprintf(stderr,
-                                 "FFN_TENSOR layer=%u name=%s buft=%s stream=1 view_src=1\n",
-                                 layer, src->name, buft_name_of(src));
-                }
-                if (out && snapshot_host) {
-                    StreamedFfnHost vh;
-                    vh.layer = layer;
-                    snapshot_host_tensor(src, &vh);
-                    out->push_back(vh);
-                }
             }
             const BuftKind kind = classify_backend_buft_name(buft_name_of(t));
             if (kind == BuftKind::CudaHost) {
@@ -218,18 +209,31 @@ void collect_streamed_ffn_hosts(const llama_model* model, uint32_t n_park,
             if (log_tensors) {
                 std::fprintf(stderr,
                              "FFN_TENSOR layer=%u name=%s buft=%s stream=1 cuda_host=%d "
-                             "view_src=%s\n",
+                             "cpu_mapped=%d view_src=%s view_buft=%s slot_q4=%d\n",
                              layer, t->name, buft_name_of(t), kind == BuftKind::CudaHost ? 1 : 0,
-                             t->view_src ? t->view_src->name : "none");
+                             buft_is_cpu_mapped(buft_name_of(t)) ? 1 : 0,
+                             t->view_src ? t->view_src->name : "none",
+                             t->view_src ? buft_name_of(t->view_src) : "-",
+                             name_is_slot_q4_weight(t->name) ? 1 : 0);
             }
             if (!out) {
                 continue;
+            }
+            // Slot A/B only packs the three Q4 GEMM weights. Binding
+            // view_src / norms first blew the 160 MiB cap so ffn_down
+            // stayed CPU_Mapped (9a5f0df).
+            if (slot_kind == kStreamSlotA || slot_kind == kStreamSlotB) {
+                if (!name_is_slot_q4_weight(t->name)) {
+                    continue;
+                }
             }
             if (already_have_tensor(out, t)) {
                 continue;
             }
             StreamedFfnHost h;
             h.layer = layer;
+            h.slot_q4 = name_is_slot_q4_weight(t->name);
+            h.view_src = t->view_src;
             if (snapshot_host) {
                 snapshot_host_tensor(t, &h);
             } else {
@@ -254,6 +258,19 @@ struct GgmlSlotGuard {
     }
 };
 
+// Drop the GGUF CPU_Mapped host alias so graph reserve cannot keep
+// reading t->data as a mapped pointer after we point the tensor at A/B.
+void detach_cpu_mapped(ggml_tensor* t) {
+    if (!t) {
+        return;
+    }
+    t->extra = nullptr;
+    t->buffer = nullptr;
+    t->data = nullptr;
+    t->view_src = nullptr;
+    t->view_offs = 0;
+}
+
 // Load-time bind: point the weight tensor at a ggml CUDA slot, then
 // tensor_set so MUL_MAT reads that VRAM after a real H2D. Private
 // cudaMalloc the sched never sees is not this.
@@ -267,6 +284,7 @@ bool attach_q4_to_ggml_slot(ggml_backend_buffer_t buf, ggml_tensor* t, const voi
     if (!base || !ggml_slot_pack_ok(off, nbytes, cap)) {
         return false;
     }
+    detach_cpu_mapped(t);
     t->buffer = buf;
     t->data = static_cast<char*>(base) + off;
     ggml_backend_buffer_init_tensor(buf, t);
@@ -290,6 +308,21 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
     uint32_t parts_ok = 0;
     bool have_gate = false;
     bool have_up = false;
+    bool have_down = false;
+    auto note_part = [&](const char* name) {
+        if (!name) {
+            return;
+        }
+        if (std::strstr(name, "ffn_gate")) {
+            have_gate = true;
+        }
+        if (std::strstr(name, "ffn_up")) {
+            have_up = true;
+        }
+        if (std::strstr(name, "ffn_down") || std::strstr(name, "ffn_out")) {
+            have_down = true;
+        }
+    };
     auto flush_layer = [&](uint32_t layer) {
         if (layer == ~0u) {
             return;
@@ -300,7 +333,10 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
                          "ffn_stream_cpu layer=%u (op_offload, not extra park)\n", layer);
             return;
         }
-        const bool ok = (have_gate && have_up && packed > 0);
+        const bool ok = (have_gate && have_up && have_down && packed > 0);
+        std::fprintf(stderr, "FFN_BIND_NEED layer=%u gate=%d up=%d down=%d packed=%llu\n",
+                     layer, have_gate ? 1 : 0, have_up ? 1 : 0, have_down ? 1 : 0,
+                     static_cast<unsigned long long>(packed));
         std::fprintf(stderr, "%s\n",
                      format_ggml_tensor_bind_line(layer, packed, ok, ok).c_str());
     };
@@ -320,6 +356,7 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
             parts_ok = 0;
             have_gate = false;
             have_up = false;
+            have_down = false;
             const int kind = ggml_stream_slot_kind(h.layer, n_park);
             if (kind == kStreamSlotA) {
                 buf = slots->a;
@@ -334,21 +371,24 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
         }
         off = align_up(off, kTensorAlign);
         if (!attach_q4_to_ggml_slot(buf, h.tensor, src, h.bytes, off)) {
-            std::fprintf(stderr, "ggml_tensor_bind layer=%u FAIL off=%llu n=%llu\n", h.layer,
-                         static_cast<unsigned long long>(off),
-                         static_cast<unsigned long long>(h.bytes));
+            std::fprintf(stderr,
+                         "ggml_tensor_bind layer=%u FAIL off=%llu n=%llu name=%s "
+                         "buft_was=%s cpu_mapped=%d\n",
+                         h.layer, static_cast<unsigned long long>(off),
+                         static_cast<unsigned long long>(h.bytes),
+                         h.tensor->name ? h.tensor->name : "-", buft_name_of(h.tensor),
+                         buft_is_cpu_mapped(buft_name_of(h.tensor)) ? 1 : 0);
             continue;
+        }
+        if (h.view_src && h.view_src != h.tensor &&
+            ggml_nbytes(h.view_src) == h.bytes) {
+            attach_q4_to_ggml_slot(buf, h.view_src, src, h.bytes, off);
         }
         off += h.bytes;
         packed += h.bytes;
         ++parts_ok;
-        if (name_is_ffn_mul_mat_src(h.tensor->name)) {
-            if (std::strstr(h.tensor->name, "ffn_gate")) {
-                have_gate = true;
-            }
-            if (std::strstr(h.tensor->name, "ffn_up")) {
-                have_up = true;
-            }
+        if (name_is_slot_q4_weight(h.tensor->name)) {
+            note_part(h.tensor->name);
         }
         ++n_bound;
         if (clocks) {
@@ -366,6 +406,7 @@ uint32_t bind_streamed_tensors_to_ggml_slots(ggml_backend_buffer_type_t gpu_buft
 void print_layer_mul_mat_srcs(const llama_model* model, uint32_t layer, uint32_t* cpu_n,
                               const char** last_name, const char** last_buft) {
     static const char* kNeed[] = {"ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
+                                  "ffn_out.weight", "ffn_out",
                                   "ffn_gate.scale", "ffn_up.scale", "ffn_down.scale"};
     for (const char* suffix : kNeed) {
         ggml_tensor* t = find_layer_tensor(model, layer, suffix);
@@ -374,17 +415,26 @@ void print_layer_mul_mat_srcs(const llama_model* model, uint32_t layer, uint32_t
         }
         const char* buft = buft_name_of(t);
         const BuftKind kind = classify_backend_buft_name(buft);
+        const char* vs_name = t->view_src ? t->view_src->name : "none";
+        const char* vs_buft = t->view_src ? buft_name_of(t->view_src) : "-";
+        const BuftKind vs_kind =
+            t->view_src ? classify_backend_buft_name(vs_buft) : BuftKind::Cuda;
         const SplitCauseKind cause = classify_split_cause(t->name, buft, true);
-        std::fprintf(stderr, "FFN_MUL_MAT_SRC layer=%u name=%s buft=%s view_src=%s cause=%s\n",
-                     layer, t->name, buft, t->view_src ? t->view_src->name : "none",
+        std::fprintf(stderr,
+                     "FFN_MUL_MAT_SRC layer=%u name=%s buft=%s view_src=%s "
+                     "view_buft=%s cpu_mapped=%d cause=%s\n",
+                     layer, t->name, buft, vs_name, vs_buft,
+                     (buft_is_cpu_mapped(buft) || buft_is_cpu_mapped(vs_buft)) ? 1 : 0,
                      split_cause_kind_name(cause));
-        if (kind != BuftKind::Cuda) {
+        const bool src_cpu = kind != BuftKind::Cuda;
+        const bool view_cpu = t->view_src && vs_kind != BuftKind::Cuda;
+        if (src_cpu || view_cpu) {
             ++(*cpu_n);
             if (last_name) {
-                *last_name = t->name;
+                *last_name = view_cpu && t->view_src ? t->view_src->name : t->name;
             }
             if (last_buft) {
-                *last_buft = buft;
+                *last_buft = view_cpu ? vs_buft : buft;
             }
         }
     }
@@ -398,11 +448,11 @@ void print_split_why(const SplitLedger& sl, uint32_t cpu_63, const char* last_na
     std::fprintf(stderr, "%s\n",
                  format_split_causes_block(sl, last_name, last_buft, 63).c_str());
     std::fprintf(stderr,
-                 "SPLIT_NOTE 532>340 because 9bcbfb7 parked 59-63 in extra CUDA "
-                 "weight buffers (CUDA0 13110) then graph reserve died. 63 was "
-                 "extra#5, not slot A/B — last hop CPU on ffn_gate/up. "
-                 "extra_park=0; 63→A 62→B; graph_reserve counted before park. "
-                 "cpu_63_srcs=%u hook/callback=0\n",
+                 "SPLIT_NOTE 638 = 9a5f0df reserve: blk.63 ffn_down stayed "
+                 "CPU_Mapped (placement/buffer, not unsupported, not "
+                 "CUDA_Host_to_CUDA). Gate/up still host hops. Bind all three "
+                 "Q4s into A/B only — no extra park. cpu_63_srcs=%u "
+                 "hook/callback=0\n",
                  cpu_63);
 }
 
@@ -616,6 +666,12 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     if (gpu_buft) {
         ggml_slots.a = ggml_backend_buft_alloc_buffer(gpu_buft, ledger.slot_a_bytes);
         ggml_slots.b = ggml_backend_buft_alloc_buffer(gpu_buft, ledger.slot_b_bytes);
+        if (ggml_slots.a) {
+            ggml_backend_buffer_set_usage(ggml_slots.a, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
+        if (ggml_slots.b) {
+            ggml_backend_buffer_set_usage(ggml_slots.b, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        }
         std::fprintf(stderr, "ffn_ggml_slots a=%d b=%d bytes=%llu (alloc_first=1 bind=0)\n",
                      ggml_slots.a ? 1 : 0, ggml_slots.b ? 1 : 0,
                      static_cast<unsigned long long>(ledger.slot_a_bytes + ledger.slot_b_bytes));
@@ -699,13 +755,13 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
                               &streamed_cuda_n, &streamed_cuda_host_n, false, false);
     std::fprintf(stderr, "FFN_PLACE_AFTER_BIND parked_cuda=%u streamed_cpu=%u streamed_cuda=%u "
                          "streamed_cuda_host=%u ggml_bound=%u extra=0 "
-                         "(63_in_slot=1 extra_park=0 never_64=1)\n",
+                         "(63_gate_up_down_in_AB=1 extra_park=0 never_64=1)\n",
                  parked_cuda_n, streamed_cpu_n, streamed_cuda_n, streamed_cuda_host_n, ggml_bound);
     clocks.add_cuda_ffn_binds(parked_cuda_n);
     clocks.set_real_h2d(ggml_bound > 0 && streamed_cuda_host_n == 0);
     uint32_t cpu_63 = 0;
-    const char* last_63_name = "blk.63.ffn_gate.weight";
-    const char* last_63_buft = "CPU";
+    const char* last_63_name = "blk.63.ffn_down.weight";
+    const char* last_63_buft = "CPU_Mapped";
     print_layer_mul_mat_srcs(model, kNLayers - 1, &cpu_63, &last_63_name, &last_63_buft);
     SplitLedger sl =
         split_ledger_trace_off_park_stream(n_stream, streamed_cuda_host_n, cpu_63);
@@ -756,7 +812,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     if (!ctx) {
         std::fprintf(stderr,
                      "RESERVE_FAIL cuda0_model_MiB=%.1f graph_reserve_MiB=%.1f "
-                     "extra_park=0 (9bcbfb7 died here at 13110+reserve, 532 splits)\n",
+                     "extra_park=0 (9a5f0df died here: 63 ffn_down CPU_Mapped, 638 splits)\n",
                      static_cast<double>(cuda0_model) / (1024.0 * 1024.0),
                      static_cast<double>(kHourGraphReserveBytes) / (1024.0 * 1024.0));
         print_split_why(sl, cpu_63, last_63_name, last_63_buft);
@@ -805,7 +861,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     clocks.set_plan(n_park, n_stream, streamer.host_pages_pinned());
     const uint32_t slot_a_layer = kNLayers - 1;  // 63 in A
     const uint32_t slot_b_layer = kNLayers - 2;  // 62 in B
-    const bool ggml_slots_live = ggml_bound >= 2 && ggml_slots.a && ggml_slots.b && cpu_63 == 0;
+    const bool ggml_slots_live = ggml_bound >= 3 && ggml_slots.a && ggml_slots.b && cpu_63 == 0;
     if (ggml_slots_live) {
         h2d_packed_layer_into_ggml(ggml_slots.a, streamed_hosts, slot_a_layer);
         h2d_packed_layer_into_ggml(ggml_slots.b, streamed_hosts, slot_b_layer);
@@ -981,7 +1037,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     st.perf = clocks.snapshot();
     if (st.ok) {
         st.message = "llama.cpp qwen35 graph eval completed; park 0-56, stream 57-63 "
-                     "(63 in slot A/B, no extra park, never park-64)";
+                     "(63 gate+up+down in A/B, no extra park, never park-64)";
     } else if (st.message.empty()) {
         st.message = "llama.cpp ran but after_logits never fired; refusing to fake n_fired";
     }
