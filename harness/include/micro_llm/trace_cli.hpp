@@ -81,5 +81,7 @@ uint32_t hybrid_ffn_park_layers();
 std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes);
 std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked);
 std::string format_ffn_slot_bind_line(int slot, uint64_t bytes, bool real_h2d);
+std::string format_ggml_tensor_bind_line(uint32_t layer, uint64_t packed, bool real_h2d,
+                                         bool ggml_used);
 
 }  // namespace micro_llm

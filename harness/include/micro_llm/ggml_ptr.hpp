@@ -67,9 +67,32 @@ inline const float* resolve_f32_in_buffer(void* base, size_t buf_size, void* dat
 
 // ggml cannot rebind a loaded Q4 tensor onto a different CUDA buffer mid-graph
 // (the sched pins buffer type at graph build). Private cudaMalloc slots that
-// the sched never sees are not a bind (5080: h2d_B=0). Load-time copy into
-// the CUDA buffer the tensor uses, or op_offload H2D of CPU Q4 into A/B,
-// is the supported path. Park-all-64 is illegal.
+// the sched never sees are not a bind (5080: h2d_B=0). Load-time
+// ggml_backend_buffer_init_tensor + ggml_backend_tensor_set onto the slot
+// the MUL_MAT reads is the bind. Park-all-64 is illegal.
 inline constexpr bool ggml_can_rebind_q4_midgraph() { return false; }
+
+// Load-time attach is allowed. Mid-graph share of 2 slots across 7 Q4
+// layers is not (see ggml_can_rebind_q4_midgraph).
+inline constexpr bool ggml_can_bind_q4_at_load() { return true; }
+
+inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t cap) {
+    return nbytes != 0 && cap != 0 && off <= cap && nbytes <= cap - off;
+}
+
+// Streamed layer → ggml slot. 0 = A, 1 = B, 2 = extra ggml CUDA buffer
+// (not llama park-64, not a private cudaMalloc). -1 = parked.
+inline constexpr int ggml_stream_slot_kind(uint32_t layer, uint32_t n_park) {
+    if (layer < n_park) {
+        return -1;
+    }
+    if (layer == n_park) {
+        return 0;
+    }
+    if (layer == n_park + 1) {
+        return 1;
+    }
+    return 2;
+}
 
 }  // namespace micro_llm

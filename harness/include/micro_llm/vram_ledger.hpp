@@ -213,7 +213,7 @@ inline BenchLine bench_from_snapshot(const PerfSnapshot& s) {
     b.nvidia_used = s.nvidia_used;
     b.h2d_per_tok = s.h2d_bytes_per_tok;
     b.kv20k_bytes = kHourKvReserveBytes;
-    b.real_h2d = s.h2d_bytes > 0 ? 1u : 0u;
+    b.real_h2d = (s.real_h2d || s.h2d_bytes > 0) ? 1u : 0u;
     return b;
 }
 

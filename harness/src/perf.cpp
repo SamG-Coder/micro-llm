@@ -58,6 +58,7 @@ void PerfClocks::reset() {
     host_pinned_ = false;
     cuda_events_ = false;
     trace_off_ = true;
+    real_h2d_ = false;
 }
 
 void PerfClocks::begin_session() {
@@ -91,7 +92,9 @@ void PerfClocks::add_ms(PerfSpan span, double ms) {
 void PerfClocks::add_h2d(uint64_t bytes) { h2d_bytes_ += bytes; }
 void PerfClocks::add_d2h(uint64_t bytes) { d2h_bytes_ += bytes; }
 void PerfClocks::add_cuda_ffn_bind() { ++cuda_ffn_binds_; }
+void PerfClocks::add_cuda_ffn_binds(uint64_t n) { cuda_ffn_binds_ += n; }
 void PerfClocks::add_host_ffn_bind() { ++host_ffn_binds_; }
+void PerfClocks::set_real_h2d(bool yes) { real_h2d_ = yes; }
 void PerfClocks::add_overlap_prefetch() { ++overlap_prefetches_; }
 
 void PerfClocks::begin_decode() {
@@ -217,6 +220,7 @@ PerfSnapshot PerfClocks::snapshot() const {
     s.host_pages_pinned = host_pinned_;
     s.cuda_events = cuda_events_;
     s.trace_off = trace_off_;
+    s.real_h2d = real_h2d_ || h2d_bytes_ > 0;
     return s;
 }
 

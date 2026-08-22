@@ -24,6 +24,25 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, hour_fixed_card_bytes() < kHourCardSoftBytes);
 
     CHECK(ctx, !ggml_can_rebind_q4_midgraph());
+    CHECK(ctx, ggml_can_bind_q4_at_load());
+    CHECK(ctx, ggml_slot_pack_ok(0, kStreamSlotBytes, kStreamSlotBytes));
+    CHECK(ctx, !ggml_slot_pack_ok(1, kStreamSlotBytes, kStreamSlotBytes));
+    CHECK(ctx, !ggml_slot_pack_ok(0, kStreamSlotBytes + 1, kStreamSlotBytes));
+    CHECK(ctx, !ggml_slot_pack_ok(0, 0, kStreamSlotBytes));
+    CHECK(ctx, ggml_stream_slot_kind(56, 57) == -1);
+    CHECK(ctx, ggml_stream_slot_kind(57, 57) == 0);
+    CHECK(ctx, ggml_stream_slot_kind(58, 57) == 1);
+    CHECK(ctx, ggml_stream_slot_kind(59, 57) == 2);
+    CHECK(ctx, ggml_stream_slot_kind(63, 57) == 2);
+    const std::string tbind =
+        format_ggml_tensor_bind_line(57, kQ4FfnLayerBytesMeasured5080, true, true);
+    CHECK(ctx, tbind.find("ggml_tensor_bind layer=57") == 0);
+    CHECK(ctx, tbind.find("real_h2d=1") != std::string::npos);
+    CHECK(ctx, tbind.find("ggml_used=1") != std::string::npos);
+    CHECK(ctx, tbind.find("layer_MiB=160.0") != std::string::npos);
+    CHECK(ctx, tbind.find("private_cudaMalloc=0") != std::string::npos);
+    CHECK(ctx, format_ggml_tensor_bind_line(59, 0, false, false).find("ggml_used=0") !=
+                   std::string::npos);
     CHECK(ctx, ffn_park_all_fits_5080_measured());
     CHECK(ctx, kQ4FfnLayerBytesMeasured5080 == 160ull * 1024ull * 1024ull);
     CHECK(ctx, kStreamSlotBytes == 160ull * 1024ull * 1024ull);

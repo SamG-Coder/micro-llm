@@ -87,6 +87,18 @@ std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked) {
     return buf;
 }
 
+std::string format_ggml_tensor_bind_line(uint32_t layer, uint64_t packed, bool real_h2d,
+                                         bool ggml_used) {
+    char buf[224];
+    std::snprintf(buf, sizeof(buf),
+                  "ggml_tensor_bind layer=%u packed=%llu layer_MiB=%.1f real_h2d=%d "
+                  "ggml_used=%d (private_cudaMalloc=0)",
+                  layer, static_cast<unsigned long long>(packed),
+                  static_cast<double>(packed) / (1024.0 * 1024.0), real_h2d ? 1 : 0,
+                  ggml_used ? 1 : 0);
+    return buf;
+}
+
 std::string format_ffn_slot_bind_line(int slot, uint64_t bytes, bool real_h2d) {
     char buf[192];
     std::snprintf(buf, sizeof(buf),

@@ -58,6 +58,7 @@ struct PerfSnapshot {
     bool host_pages_pinned = false;
     bool cuda_events = false;
     bool trace_off = true;
+    bool real_h2d = false;  // ggml tensor_set into the buffer MUL_MAT reads
 };
 
 class PerfClocks {
@@ -89,6 +90,8 @@ public:
     void set_split_ledger(uint32_t hooks, uint32_t buffer_type, uint32_t backend, uint32_t op);
     void set_cuda0(uint64_t model_b, uint64_t compute_b);
     void set_nvidia_used(uint64_t used_b);
+    void set_real_h2d(bool yes);
+    void add_cuda_ffn_binds(uint64_t n);
 
     // Query CUDA free/total when built with nvcc. Zeros otherwise.
     static bool query_vram(uint64_t* free_b, uint64_t* total_b);
@@ -132,6 +135,7 @@ private:
     bool host_pinned_ = false;
     bool cuda_events_ = false;
     bool trace_off_ = true;
+    bool real_h2d_ = false;
 };
 
 std::string format_performance_line(const PerfSnapshot& s);

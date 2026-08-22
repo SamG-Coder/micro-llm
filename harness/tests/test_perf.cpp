@@ -28,6 +28,8 @@ void test_perf_clocks(TestContext& ctx) {
     clocks.end_span(PerfSpan::Pcie);
     clocks.add_d2h(kFloorBitsetBytes);
     clocks.add_cuda_ffn_bind();
+    clocks.add_cuda_ffn_binds(191);
+    clocks.set_real_h2d(true);
     clocks.add_overlap_prefetch();
     clocks.end_token();
 
@@ -38,8 +40,9 @@ void test_perf_clocks(TestContext& ctx) {
     CHECK(ctx, s.h2d_bytes_per_tok == 150ull * 1024ull * 1024ull);
     CHECK(ctx, s.d2h_bytes_per_tok == kFloorBitsetBytes);
     CHECK(ctx, s.d2h_bytes_per_tok < 200000);  // ~140KB, not 17408*4*64
-    CHECK(ctx, s.cuda_ffn_binds == 1);
+    CHECK(ctx, s.cuda_ffn_binds == 192);
     CHECK(ctx, s.host_ffn_binds == 0);
+    CHECK(ctx, s.real_h2d);
     CHECK(ctx, s.gpu_ms > 0.0);
     CHECK(ctx, s.host_pages_pinned);
     CHECK(ctx, s.trace_off);
