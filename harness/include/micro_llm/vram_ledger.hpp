@@ -260,6 +260,22 @@ inline std::string format_split_why_line(uint32_t n_splits, const char* last_ten
 
 // Name the tensor + backend still off CUDA. view_src is the usual 532 hop:
 // weight poked to a slot, parent mmap (CPU_Mapped) still hosts MUL_MAT.
+// CUDA buft + stale host mmap / integer offset is the post-reserve AV
+// candidate. Print tensor+backend at that split. Not a hook D2H.
+inline std::string format_ffn_av_split_line(int32_t layer, const char* tensor, const char* buft,
+                                           const char* view_src, const char* view_buft,
+                                           const char* data_kind, int fixed) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "FFN_AV_SPLIT layer=%d tensor=%s buft=%s view_src=%s view_buft=%s "
+                  "data=%s fixed=%d (CUDA+offset/host mmap → 0xC0000005)",
+                  layer, tensor && tensor[0] ? tensor : "-", buft && buft[0] ? buft : "-",
+                  view_src && view_src[0] ? view_src : "none",
+                  view_buft && view_buft[0] ? view_buft : "-",
+                  data_kind && data_kind[0] ? data_kind : "-", fixed);
+    return buf;
+}
+
 inline std::string format_ffn_hop_line(int32_t layer, const char* tensor, const char* buft,
                                       const char* view_src, const char* view_buft,
                                       SplitCauseKind cause) {

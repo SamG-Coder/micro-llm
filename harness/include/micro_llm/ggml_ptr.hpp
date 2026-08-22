@@ -80,6 +80,77 @@ inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t 
     return nbytes != 0 && cap != 0 && off <= cap && nbytes <= cap - off;
 }
 
+// After a CUDA rebind, t->data may still be a GGUF mmap VA or an alloc
+// offset. Passing either to a kernel AVs (0xC0000005). Classify first.
+enum class TensorDataKind : uint8_t {
+    None = 0,
+    IntegerOffset = 1,
+    InBuffer = 2,
+    StaleHost = 3,
+};
+
+inline const char* tensor_data_kind_name(TensorDataKind k) {
+    switch (k) {
+        case TensorDataKind::None:
+            return "none";
+        case TensorDataKind::IntegerOffset:
+            return "integer_offset";
+        case TensorDataKind::InBuffer:
+            return "in_buffer";
+        case TensorDataKind::StaleHost:
+            return "stale_host";
+    }
+    return "none";
+}
+
+inline TensorDataKind classify_tensor_data_ptr(const void* data, const void* buf_base,
+                                              size_t buf_size) {
+    if (!data) {
+        return TensorDataKind::None;
+    }
+    if (ptr_looks_like_integer_offset(data, buf_size != 0 ? buf_size : kMinDeviceVaHint)) {
+        return TensorDataKind::IntegerOffset;
+    }
+    if (buf_base && buf_size != 0) {
+        const auto d = reinterpret_cast<uintptr_t>(data);
+        const auto b = reinterpret_cast<uintptr_t>(buf_base);
+        if (d >= b && d < b + buf_size) {
+            return TensorDataKind::InBuffer;
+        }
+    }
+    return TensorDataKind::StaleHost;
+}
+
+// Re-resolve CUDA weight data to buffer base + view_offs (or the offset
+// stored in data). Does not D2H. changed=true when the pointer moved.
+inline void* repoint_cuda_data(void* base, size_t buf_size, void* data, size_t view_offs,
+                               size_t nbytes, bool* changed) {
+    if (changed) {
+        *changed = false;
+    }
+    if (!base || nbytes == 0 || buf_size < nbytes) {
+        return data;
+    }
+    const TensorDataKind kind = classify_tensor_data_ptr(data, base, buf_size);
+    if (kind == TensorDataKind::InBuffer) {
+        return data;
+    }
+    bool ok = false;
+    const float* p = resolve_f32_in_buffer(base, buf_size, data, view_offs, nbytes, &ok);
+    if (!ok || !p) {
+        return data;
+    }
+    if (changed) {
+        *changed = static_cast<const void*>(p) != data;
+    }
+    return const_cast<float*>(p);
+}
+
+inline bool tensor_data_is_av_risk(TensorDataKind k) {
+    return k == TensorDataKind::IntegerOffset || k == TensorDataKind::StaleHost ||
+           k == TensorDataKind::None;
+}
+
 // One A/B slot = one streamed layer’s gate+up+down. 254e10c: down
 // offset past 160. If 160 < aligned sum, the slot MUST grow. Extra
 // align slack so down is not flush against the cap.
