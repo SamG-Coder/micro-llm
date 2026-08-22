@@ -221,6 +221,21 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, park_line.find("never_64") == std::string::npos);
     CHECK(ctx, format_ffn_cuda_bind_line(9, false).find("stream=1") != std::string::npos);
 
+    BenchLine onb;
+    onb.trace_on = true;
+    onb.tok_per_sec = 4.0;
+    onb.decode_s = 8.0;
+    onb.prefill_s = 2.0;
+    onb.prefill_tok = 41;
+    onb.host_ffn_binds = 0;
+    onb.cuda0_model = 10000ull * 1024ull * 1024ull;
+    onb.cuda0_compute = 1026ull * 1024ull * 1024ull;
+    onb.nvidia_used = 13000ull * 1024ull * 1024ull;
+    const std::string on_line = format_bench_line(onb);
+    CHECK(ctx, on_line.find("BENCH TRACE=on") == 0);
+    CHECK(ctx, on_line.find("swap_7780=1") != std::string::npos);
+    CHECK(ctx, on_line.find("host_ffn_binds=0") != std::string::npos);
+
     const std::string pcie0 = format_pcie_bound_line(0);
     CHECK(ctx, pcie0.find("B/tok=0") != std::string::npos);
     CHECK(ctx, pcie0.find("ggml_rebind_q4=0") != std::string::npos);

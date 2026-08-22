@@ -17,6 +17,9 @@ void test_perf_clocks(TestContext& ctx) {
     clocks.set_ffn_gemm(192, 0);
     clocks.set_prefill(1.25, 41);
     clocks.set_split_ledger(99, 1, 1, 1);
+    clocks.set_cuda0(9851ull * 1024ull * 1024ull, 1026ull * 1024ull * 1024ull);
+    clocks.set_nvidia_used(14000ull * 1024ull * 1024ull);
+    clocks.begin_decode_wall();
     clocks.begin_span(PerfSpan::Gpu);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     clocks.end_span(PerfSpan::Gpu);
@@ -44,6 +47,26 @@ void test_perf_clocks(TestContext& ctx) {
     CHECK(ctx, s.ffn_cuda_gemm == 192);
     CHECK(ctx, s.ffn_cpu_gemm == 0);
     CHECK(ctx, s.prefill_tok == 41);
+    CHECK(ctx, s.cuda0_model == 9851ull * 1024ull * 1024ull);
+    CHECK(ctx, s.cuda0_compute == 1026ull * 1024ull * 1024ull);
+    CHECK(ctx, s.nvidia_used == 14000ull * 1024ull * 1024ull);
+    const BenchLine bench = bench_from_snapshot(s);
+    const std::string bl = format_bench_line(bench);
+    CHECK(ctx, bl.find("BENCH TRACE=off") == 0);
+    CHECK(ctx, bl.find("tok/s=") != std::string::npos);
+    CHECK(ctx, bl.find("prefill_s=1.25") != std::string::npos);
+    CHECK(ctx, bl.find("prefill_tok=41") != std::string::npos);
+    CHECK(ctx, bl.find("host_ffn_binds=0") != std::string::npos);
+    CHECK(ctx, bl.find("cuda0_model_MiB=") != std::string::npos);
+    CHECK(ctx, bl.find("cuda0_compute_MiB=") != std::string::npos);
+    CHECK(ctx, bl.find("nvidia_used_MiB=") != std::string::npos);
+    CHECK(ctx, bl.find("h2d_B/tok=") != std::string::npos);
+    CHECK(ctx, bl.find("kv20k_MiB=") != std::string::npos);
+    CHECK(ctx, !bench_swap_7780(3.5));
+    CHECK(ctx, bench_swap_7780(3.56));
+    BenchLine slow;
+    slow.tok_per_sec = 0.96;
+    CHECK(ctx, format_bench_line(slow).find("swap_7780=0") != std::string::npos);
 
     const std::string line = format_performance_line(s);
     CHECK(ctx, line.find("PERFORMANCE") == 0);

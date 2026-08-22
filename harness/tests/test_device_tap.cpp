@@ -24,6 +24,27 @@ void test_device_tap_api(TestContext& ctx) {
         CHECK(ctx, !hooks.table().layer_was_hooked(5));
     }
 
+    // Alloc offset is not a device VA. Must not launch (5080 first-decode AV).
+    const float* offset = reinterpret_cast<const float*>(static_cast<uintptr_t>(0x4000));
+    CHECK(ctx, ptr_looks_like_integer_offset(offset));
+    CHECK(ctx, !hooks.on_ffn_activations_device(6, offset, offset, 8));
+    CHECK(ctx, !hooks.table().layer_was_hooked(6));
+
+    GraphTensorView bad;
+    bad.name = "ffn_gate-1";
+    bad.data = offset;
+    bad.on_device = true;
+    bad.ptr_ok = false;
+    bad.ne0 = kFfnIntermediate;
+    StreamerConfig scfg;
+    scfg.ffn_scratch_bytes = 4096;
+    TraceStreamer streamer(scfg);
+    streamer.begin_session();
+    GraphHookSession sess(hooks, streamer);
+    sess.begin_token(0);
+    CHECK(ctx, !sess.on_tensor(bad, false));
+    streamer.end_session();
+
     CudaReduceContext& ctxu = persistent_cuda_reduce();
     if (!ffn_reduce_cuda_available()) {
         CHECK(ctx, !ctxu.ensure(kFfnIntermediate));

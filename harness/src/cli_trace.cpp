@@ -32,8 +32,8 @@ void usage(const char* argv0) {
                  "  --out           MLPT path (default prune_table.bin). Checkpoint every 2000.\n"
                  "  --n-predict     Tokens to generate (default 64 in tests; 20000 with --model).\n"
                  "  --stub          Tests only. Synthetic hooks, no GGUF.\n"
-                 "  --trace-off     Milestone 1: cb_eval=nullptr. Alias --no-trace.\n"
-                 "  --trace-on      Fire-tap hooks (not Milestone 1).\n"
+                 "  --trace-off     cb_eval=nullptr. Alias --no-trace. Prints BENCH.\n"
+                 "  --trace-on      Device fire-tap (buffer+offset). Same BENCH line.\n"
                  "  --check-serve PATH  Print remnant_may_serve for a remnant GGUF and exit.\n",
                  argv0);
 }

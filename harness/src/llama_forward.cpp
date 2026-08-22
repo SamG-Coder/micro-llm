@@ -123,20 +123,28 @@ bool llama_cb_eval(struct ggml_tensor* t, bool ask, void* user_data) {
     v.name = t->name;
     v.ne0 = t->ne[0] > 0 ? static_cast<uint32_t>(t->ne[0]) : 0;
     v.ne1 = t->ne[1] > 0 ? static_cast<uint32_t>(t->ne[1]) : 1;
+    int layer = -1;
+    const GraphHookSite site = classify_graph_tensor(v.name, &layer);
+    if (site == GraphHookSite::None || site == GraphHookSite::FfnGatePar ||
+        site == GraphHookSite::Logits) {
+        return false;
+    }
     if (ask) {
+        // Never read t->data on ask. Weights are Q4 — not a fire tap.
         return u->session->on_tensor(v, true);
+    }
+    if (!tensor_is_f32(t)) {
+        return false;
     }
     bool on_device = false;
     bool ptr_ok = false;
     v.data = tensor_f32_view(t, &on_device, &ptr_ok);
     v.on_device = on_device;
     v.ptr_ok = ptr_ok;
-    if (!ptr_ok) {
+    if (!ptr_ok || !v.data || ptr_looks_like_integer_offset(v.data)) {
         // Unresolved device VA: skip tap. Do not kernel-launch. Do not AV.
         return false;
     }
-    int layer = -1;
-    const GraphHookSite site = classify_graph_tensor(v.name, &layer);
     if (on_device && (site == GraphHookSite::AttnResidual || site == GraphHookSite::LayerOut ||
                       site == GraphHookSite::InputEmbed)) {
         // Packs need host hidden (5120), not 17408 FFN activations.
@@ -192,6 +200,10 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     }
 
     llama_backend_init();
+
+    uint64_t v_free0 = 0;
+    uint64_t v_tot0 = 0;
+    PerfClocks::query_vram(&v_free0, &v_tot0);
 
     llama_model_params mparams = llama_model_default_params();
     // Pin is tensor overrides, not ngl. 0 = CPU default. 16 = wrong 16
@@ -257,6 +269,12 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         return st;
     }
 
+    uint64_t v_free1 = 0;
+    uint64_t v_tot1 = 0;
+    PerfClocks::query_vram(&v_free1, &v_tot1);
+    const uint64_t cuda0_model =
+        (v_tot1 > v_free1 && v_free0 >= v_free1) ? (v_free0 - v_free1) : 0;
+
     const int32_t n_layer = llama_model_n_layer(model);
     const int32_t n_embd = llama_model_n_embd(model);
     const uint32_t hook_layers = hook_layer_count_from_blocks(static_cast<uint32_t>(n_layer));
@@ -287,6 +305,10 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     clocks.set_cuda_events(have_vram);
     clocks.set_vram(park_bytes + kPinnedGaWeightBytes + kPinnedEmbedWeightBytes,
                     kHourKvReserveBytes, kCudaScratchBytes + kStreamWorkspaceBytes, vfree);
+    clocks.set_cuda0(cuda0_model, 0);
+    if (vtotal > vfree) {
+        clocks.set_nvidia_used(vtotal - vfree);
+    }
 
     GraphHookSession session(hooks, streamer);
     if (cfg.on_htr1) {
@@ -322,6 +344,15 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         st.ok = false;
         st.message = "llama.cpp failed to create context (OOM or missing DeltaNet kernels)";
         return st;
+    }
+
+    uint64_t v_free2 = 0;
+    uint64_t v_tot2 = 0;
+    if (PerfClocks::query_vram(&v_free2, &v_tot2) && v_free1 >= v_free2) {
+        clocks.set_cuda0(cuda0_model, v_free1 - v_free2);
+        if (v_tot2 > v_free2) {
+            clocks.set_nvidia_used(v_tot2 - v_free2);
+        }
     }
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
@@ -395,7 +426,9 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
                                                            prefill_t0)
                                  .count();
     clocks.set_prefill(prefill_s, static_cast<uint32_t>(n_tok));
-    std::fprintf(stderr, "PREFILL tokens=%d elapsed_s=%.2f\n", n_tok, prefill_s);
+    clocks.begin_decode_wall();
+    std::fprintf(stderr, "PREFILL tokens=%d elapsed_s=%.2f TRACE=%s\n", n_tok, prefill_s,
+                 cfg.trace_hooks ? "on" : "off");
 
     uint32_t generated = 0;
     const uint32_t want = cfg.n_predict;
@@ -408,21 +441,20 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
             clocks.set_vram(park_bytes + kPinnedGaWeightBytes + kPinnedEmbedWeightBytes,
                             static_cast<uint64_t>(cfg.n_ctx) * kKvBytesPerTokenFp16,
                             kCudaScratchBytes + kStreamWorkspaceBytes, fr);
+            if (tot > fr) {
+                clocks.set_nvidia_used(tot - fr);
+            }
         }
         const PerfSnapshot snap = clocks.snapshot();
-        const SplitLedger sl = split_ledger_trace_off_cuda_ffn();
+        SplitLedger sl = split_ledger_trace_off_cuda_ffn();
+        sl.trace_off = !cfg.trace_hooks;
+        sl.callback_hooks = 0;
         std::fprintf(stderr, "%s\n", format_performance_line(snap).c_str());
         std::fprintf(stderr, "%s\n", format_performance_bottlenecks(snap).c_str());
         std::fprintf(stderr, "%s\n", format_vram_ledger(ledger).c_str());
-        std::fprintf(stderr, "%s\n",
-                     format_split_ledger(cfg.trace_hooks ? sl : split_ledger_trace_off_cuda_ffn())
-                         .c_str());
+        std::fprintf(stderr, "%s\n", format_split_ledger(sl).c_str());
         std::fprintf(stderr, "%s\n", format_ffn_gemm_line(ffn_gemm_all_cuda()).c_str());
-        std::fprintf(stderr, "%s\n",
-                     format_bench_line(snap.tok_per_sec, snap.prefill_s, snap.prefill_tok,
-                                       snap.host_ffn_binds, snap.cuda_ffn_binds,
-                                       snap.h2d_bytes_per_tok, kHourKvReserveBytes)
-                         .c_str());
+        std::fprintf(stderr, "%s\n", format_bench_line(bench_from_snapshot(snap)).c_str());
         std::fprintf(stderr, "%s\n", format_pcie_bound_line(n_stream).c_str());
         std::fprintf(stderr, "%s\n",
                      format_tokens_per_sec_line(snap.tok_per_sec, generated, snap.wall_s).c_str());

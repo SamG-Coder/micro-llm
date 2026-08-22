@@ -1,6 +1,7 @@
 #include "micro_llm/trace_hooks.hpp"
 
 #include "micro_llm/ffn_reduce.hpp"
+#include "micro_llm/ggml_ptr.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,11 @@ bool TraceHooks::on_ffn_activations_device(uint32_t layer, const float* d_gate,
                                            uint32_t n_channels) {
     if (!d_gate || !d_up || layer >= kNLayers || n_channels == 0 ||
         n_channels > kFfnIntermediate) {
+        return false;
+    }
+    // ggml CUDA t->data is an alloc offset until resolved to buffer+offs.
+    // A raw offset launched as float* AVs on first decode (5080 TRACE-on).
+    if (ptr_looks_like_integer_offset(d_gate) || ptr_looks_like_integer_offset(d_up)) {
         return false;
     }
     if (!token_open_) {

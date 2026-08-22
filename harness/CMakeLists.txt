@@ -217,6 +217,10 @@ add_test(NAME micro_llm_trace_no_weights
 set_tests_properties(micro_llm_trace_no_weights PROPERTIES WILL_FAIL TRUE)
 add_test(NAME micro_llm_trace_stub
          COMMAND micro-llm-trace --stub --n-predict 2 --out ${CMAKE_CURRENT_BINARY_DIR}/stub_prune.bin)
+add_test(NAME micro_llm_trace_stub_off
+         COMMAND micro-llm-trace --stub --no-trace --n-predict 2 --out ${CMAKE_CURRENT_BINARY_DIR}/stub_off.bin)
+add_test(NAME micro_llm_trace_stub_on
+         COMMAND micro-llm-trace --stub --trace-on --n-predict 2 --out ${CMAKE_CURRENT_BINARY_DIR}/stub_on.bin)
 add_test(NAME micro_llm_trace_ui_check
          COMMAND micro-llm-trace --ui-check)
 add_test(NAME micro_llm_trace_ui_keeps_model

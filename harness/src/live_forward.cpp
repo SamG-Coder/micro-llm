@@ -84,6 +84,8 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
 
     streamer.begin_session();
     clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
+    clocks.set_prefill(0.0, 0);
+    clocks.begin_decode_wall();
     for (uint32_t t = 0; t < n; ++t) {
         hooks.begin_token(t);
         clocks.begin_span(PerfSpan::Gpu);
@@ -147,11 +149,7 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::fprintf(stderr, "%s\n", format_performance_bottlenecks(s.perf).c_str());
     std::fprintf(stderr, "%s\n", format_split_ledger(split_ledger_trace_off_cuda_ffn()).c_str());
     std::fprintf(stderr, "%s\n", format_ffn_gemm_line(ffn_gemm_all_cuda()).c_str());
-    std::fprintf(stderr, "%s\n",
-                 format_bench_line(s.perf.tok_per_sec, s.perf.prefill_s, s.perf.prefill_tok,
-                                   s.perf.host_ffn_binds, s.perf.cuda_ffn_binds,
-                                   s.perf.h2d_bytes_per_tok, kHourKvReserveBytes)
-                     .c_str());
+    std::fprintf(stderr, "%s\n", format_bench_line(bench_from_snapshot(s.perf)).c_str());
     std::fprintf(stderr, "%s\n",
                  format_tokens_per_sec_line(s.perf.tok_per_sec, static_cast<uint32_t>(s.n_tokens),
                                             s.perf.wall_s)

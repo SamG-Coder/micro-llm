@@ -4,6 +4,7 @@
 // then leftover under 14 GiB is parked FFN. KV 20k is reserved before
 // sitting at 14. Park weights, not KV. Compile-tested without llama.cpp.
 
+#include "micro_llm/perf.hpp"
 #include "micro_llm/types.hpp"
 
 #include <cstdint>
@@ -132,19 +133,73 @@ inline std::string format_ffn_gemm_line(const FfnGemmCounts& g) {
     return buf;
 }
 
+struct BenchLine {
+    bool trace_on = false;
+    double tok_per_sec = 0.0;
+    double decode_s = 0.0;
+    double prefill_s = 0.0;
+    uint32_t prefill_tok = 0;
+    uint64_t host_ffn_binds = 0;
+    uint64_t cuda_ffn_binds = 0;
+    uint64_t cuda0_model = 0;
+    uint64_t cuda0_compute = 0;
+    uint64_t nvidia_used = 0;
+    uint64_t h2d_per_tok = 0;
+    uint64_t kv20k_bytes = kHourKvReserveBytes;
+};
+
+inline constexpr bool bench_swap_7780(double tok_per_sec) {
+    return tok_per_sec > static_cast<double>(kMeasured7780TokPerSec192);
+}
+
+inline BenchLine bench_from_snapshot(const PerfSnapshot& s) {
+    BenchLine b;
+    b.trace_on = !s.trace_off;
+    b.tok_per_sec = s.tok_per_sec;
+    b.decode_s = s.decode_s;
+    b.prefill_s = s.prefill_s;
+    b.prefill_tok = s.prefill_tok;
+    b.host_ffn_binds = s.host_ffn_binds;
+    b.cuda_ffn_binds = s.cuda_ffn_binds;
+    b.cuda0_model = s.cuda0_model;
+    b.cuda0_compute = s.cuda0_compute;
+    b.nvidia_used = s.nvidia_used;
+    b.h2d_per_tok = s.h2d_bytes_per_tok;
+    b.kv20k_bytes = kHourKvReserveBytes;
+    return b;
+}
+
+inline std::string format_bench_line(const BenchLine& b) {
+    char buf[640];
+    std::snprintf(buf, sizeof(buf),
+                  "BENCH TRACE=%s tok/s=%.2f decode_s=%.2f prefill_s=%.2f "
+                  "prefill_tok=%u host_ffn_binds=%llu cuda_ffn_binds=%llu "
+                  "cuda0_model_MiB=%.1f cuda0_compute_MiB=%.1f nvidia_used_MiB=%.1f "
+                  "h2d_B/tok=%llu kv20k_MiB=%.1f swap_7780=%d",
+                  b.trace_on ? "on" : "off", b.tok_per_sec, b.decode_s, b.prefill_s,
+                  b.prefill_tok, static_cast<unsigned long long>(b.host_ffn_binds),
+                  static_cast<unsigned long long>(b.cuda_ffn_binds),
+                  static_cast<double>(b.cuda0_model) / (1024.0 * 1024.0),
+                  static_cast<double>(b.cuda0_compute) / (1024.0 * 1024.0),
+                  static_cast<double>(b.nvidia_used) / (1024.0 * 1024.0),
+                  static_cast<unsigned long long>(b.h2d_per_tok),
+                  static_cast<double>(b.kv20k_bytes) / (1024.0 * 1024.0),
+                  bench_swap_7780(b.tok_per_sec) ? 1 : 0);
+    return buf;
+}
+
 inline std::string format_bench_line(double tok_per_sec, double prefill_s, uint32_t prefill_tok,
                                     uint64_t host_ffn_binds, uint64_t cuda_ffn_binds,
                                     uint64_t h2d_per_tok, uint64_t kv20k_bytes) {
-    char buf[384];
-    std::snprintf(buf, sizeof(buf),
-                  "BENCH tok/s=%.2f prefill_s=%.2f prefill_tok=%u host_ffn_binds=%llu "
-                  "cuda_ffn_binds=%llu h2d_B/tok=%llu kv20k_MiB=%.1f",
-                  tok_per_sec, prefill_s, prefill_tok,
-                  static_cast<unsigned long long>(host_ffn_binds),
-                  static_cast<unsigned long long>(cuda_ffn_binds),
-                  static_cast<unsigned long long>(h2d_per_tok),
-                  static_cast<double>(kv20k_bytes) / (1024.0 * 1024.0));
-    return buf;
+    BenchLine b;
+    b.tok_per_sec = tok_per_sec;
+    b.prefill_s = prefill_s;
+    b.prefill_tok = prefill_tok;
+    b.host_ffn_binds = host_ffn_binds;
+    b.cuda_ffn_binds = cuda_ffn_binds;
+    b.h2d_per_tok = h2d_per_tok;
+    b.kv20k_bytes = kv20k_bytes;
+    return format_bench_line(b);
 }
 
 }  // namespace micro_llm

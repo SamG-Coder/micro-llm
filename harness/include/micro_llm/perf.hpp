@@ -51,6 +51,10 @@ struct PerfSnapshot {
     uint64_t ffn_cpu_gemm = 0;
     double prefill_s = 0.0;
     uint32_t prefill_tok = 0;
+    double decode_s = 0.0;  // generate wall only; tok/s uses this, not prefill
+    uint64_t cuda0_model = 0;
+    uint64_t cuda0_compute = 0;
+    uint64_t nvidia_used = 0;
     bool host_pages_pinned = false;
     bool cuda_events = false;
     bool trace_off = true;
@@ -73,6 +77,7 @@ public:
     void add_overlap_prefetch();
     void note_backend(bool on_host);
     void begin_decode();  // reset per-decode split counter
+    void begin_decode_wall();  // start generate tok/s clock (after prefill)
     uint32_t graph_splits() const { return graph_splits_; }
 
     void set_plan(uint32_t n_park, uint32_t n_stream, bool host_pinned);
@@ -82,6 +87,8 @@ public:
     void set_prefill(double seconds, uint32_t tokens);
     void set_ffn_gemm(uint64_t cuda, uint64_t cpu);
     void set_split_ledger(uint32_t hooks, uint32_t buffer_type, uint32_t backend, uint32_t op);
+    void set_cuda0(uint64_t model_b, uint64_t compute_b);
+    void set_nvidia_used(uint64_t used_b);
 
     // Query CUDA free/total when built with nvcc. Zeros otherwise.
     static bool query_vram(uint64_t* free_b, uint64_t* total_b);
@@ -107,6 +114,7 @@ private:
     uint32_t graph_splits_ = 0;
     uint32_t last_backend_ = 2;  // 2 = none, 0 = gpu, 1 = host
     uint64_t t0_ns_ = 0;
+    uint64_t decode_t0_ns_ = 0;
     uint32_t n_tokens_ = 0;
     uint32_t n_parked_ = 0;
     uint32_t n_streamed_ = 0;
@@ -118,6 +126,9 @@ private:
     uint64_t ffn_cpu_gemm_ = 0;
     double prefill_s_ = 0.0;
     uint32_t prefill_tok_ = 0;
+    uint64_t cuda0_model_ = 0;
+    uint64_t cuda0_compute_ = 0;
+    uint64_t nvidia_used_ = 0;
     bool host_pinned_ = false;
     bool cuda_events_ = false;
     bool trace_off_ = true;

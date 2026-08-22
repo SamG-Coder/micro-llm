@@ -1,5 +1,6 @@
 #include "micro_llm/graph_hooks.hpp"
 
+#include "micro_llm/ggml_ptr.hpp"
 #include "micro_llm/hook_ring.hpp"
 
 #include <cstring>
@@ -174,7 +175,9 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
             const float* up = t.data + static_cast<size_t>(col) * t.ne0;
             const uint32_t n = t.ne0 < kFfnIntermediate ? t.ne0 : kFfnIntermediate;
             bool ok = false;
-            if (t.on_device && t.ptr_ok && pending_gate_device_ && device_gate_) {
+            if (t.on_device && t.ptr_ok && pending_gate_device_ && device_gate_ &&
+                !ptr_looks_like_integer_offset(device_gate_) &&
+                !ptr_looks_like_integer_offset(up)) {
                 ok = hooks_.on_ffn_activations_device(static_cast<uint32_t>(layer),
                                                       device_gate_ + static_cast<size_t>(col) * device_gate_n_,
                                                       up, n);

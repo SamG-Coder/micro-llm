@@ -103,8 +103,11 @@ Gated Attention QKVO blocks, embed, **all FFN**, and DeltaNet on CUDA so
 MUL_MAT is a CUDA GEMM. Not `ngl=16` (wrong 16 layers) and not `ngl=99`
 (parks the file). KV reserved to 20k, then slot A + slot B, then leftover
 under 14 is parked FFN. `--trace-off` / `--no-trace` sets `cb_eval=nullptr`
-(SPLIT_LEDGER `callback/hooks=0`). Flash-attn stays off. `n_batch=512`,
-`n_ubatch=32`. VRAM_LEDGER / FFN_GEMM / BENCH lines on stderr.
+(SPLIT_LEDGER `callback/hooks=0`). `--trace-on` attaches the device
+fire-tap (CUDA pointer = buffer base + offset, never a raw `t->data`
+offset). Both print the same `BENCH TRACE=on|off` line: decode tok/s,
+prefill_s/tok, host_ffn_binds, CUDA0 model+compute, nvidia used,
+h2d_B/tok, kv20k. Flash-attn stays off. `n_batch=512`, `n_ubatch=32`.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
 to the exe). The page is a dark star field: quiet token streaks + dim glyphs,

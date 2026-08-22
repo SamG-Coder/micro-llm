@@ -40,6 +40,7 @@ void PerfClocks::reset() {
     graph_splits_ = 0;
     last_backend_ = 2;
     t0_ns_ = 0;
+    decode_t0_ns_ = 0;
     n_tokens_ = 0;
     n_parked_ = 0;
     n_streamed_ = 0;
@@ -51,6 +52,9 @@ void PerfClocks::reset() {
     ffn_cpu_gemm_ = 0;
     prefill_s_ = 0.0;
     prefill_tok_ = 0;
+    cuda0_model_ = 0;
+    cuda0_compute_ = 0;
+    nvidia_used_ = 0;
     host_pinned_ = false;
     cuda_events_ = false;
     trace_off_ = true;
@@ -95,6 +99,8 @@ void PerfClocks::begin_decode() {
     last_backend_ = 2;
 }
 
+void PerfClocks::begin_decode_wall() { decode_t0_ns_ = now_ns(); }
+
 void PerfClocks::note_backend(bool on_host) {
     const uint32_t b = on_host ? 1u : 0u;
     if (last_backend_ != 2 && last_backend_ != b) {
@@ -138,6 +144,13 @@ void PerfClocks::set_split_ledger(uint32_t hooks, uint32_t buffer_type, uint32_t
     split_op_ = op;
 }
 
+void PerfClocks::set_cuda0(uint64_t model_b, uint64_t compute_b) {
+    cuda0_model_ = model_b;
+    cuda0_compute_ = compute_b;
+}
+
+void PerfClocks::set_nvidia_used(uint64_t used_b) { nvidia_used_ = used_b; }
+
 bool PerfClocks::query_vram(uint64_t* free_b, uint64_t* total_b) {
 #if defined(MICRO_LLM_HAS_CUDA)
     size_t free_sz = 0;
@@ -168,8 +181,9 @@ PerfSnapshot PerfClocks::snapshot() const {
     s.n_tokens = n_tokens_;
     const uint64_t now = now_ns();
     s.wall_s = t0_ns_ == 0 ? 0.0 : static_cast<double>(now - t0_ns_) / 1.0e9;
-    s.tok_per_sec = s.wall_s > 0.0 ? static_cast<double>(n_tokens_) / s.wall_s : 0.0;
-    s.latency_ms = n_tokens_ > 0 ? (s.wall_s * 1000.0) / static_cast<double>(n_tokens_) : 0.0;
+    s.decode_s = decode_t0_ns_ == 0 ? s.wall_s : static_cast<double>(now - decode_t0_ns_) / 1.0e9;
+    s.tok_per_sec = s.decode_s > 0.0 ? static_cast<double>(n_tokens_) / s.decode_s : 0.0;
+    s.latency_ms = n_tokens_ > 0 ? (s.decode_s * 1000.0) / static_cast<double>(n_tokens_) : 0.0;
     s.gpu_ms = n_tokens_ > 0 ? span_ms_[0] / static_cast<double>(n_tokens_) : 0.0;
     s.pcie_ms = n_tokens_ > 0 ? span_ms_[1] / static_cast<double>(n_tokens_) : 0.0;
     s.cpu_ms = n_tokens_ > 0 ? span_ms_[2] / static_cast<double>(n_tokens_) : 0.0;
@@ -197,6 +211,9 @@ PerfSnapshot PerfClocks::snapshot() const {
     s.ffn_cpu_gemm = ffn_cpu_gemm_;
     s.prefill_s = prefill_s_;
     s.prefill_tok = prefill_tok_;
+    s.cuda0_model = cuda0_model_;
+    s.cuda0_compute = cuda0_compute_;
+    s.nvidia_used = nvidia_used_;
     s.host_pages_pinned = host_pinned_;
     s.cuda_events = cuda_events_;
     s.trace_off = trace_off_;
