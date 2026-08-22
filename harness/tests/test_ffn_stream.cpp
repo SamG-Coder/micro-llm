@@ -25,11 +25,6 @@ void test_ffn_stream_budget(TestContext& ctx) {
 
     CHECK(ctx, !ggml_can_rebind_q4_midgraph());
     CHECK(ctx, ggml_can_bind_q4_at_load());
-    CHECK(ctx, ggml_bind_storage(reinterpret_cast<const void*>(1), nullptr) ==
-                   reinterpret_cast<const void*>(1));
-    CHECK(ctx, ggml_bind_storage(reinterpret_cast<const void*>(1),
-                                 reinterpret_cast<const void*>(2)) ==
-                   reinterpret_cast<const void*>(2));
     CHECK(ctx, ggml_slot_pack_ok(0, kStreamSlotBytes, kStreamSlotBytes));
     CHECK(ctx, !ggml_slot_pack_ok(1, kStreamSlotBytes, kStreamSlotBytes));
     CHECK(ctx, !ggml_slot_pack_ok(0, kStreamSlotBytes + 1, kStreamSlotBytes));
@@ -65,28 +60,6 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, led.slot_b_bytes == kStreamSlotBytes);
     CHECK(ctx, led.slot_a_bytes + led.slot_b_bytes + 20ull * 1024ull * 1024ull ==
                    kStreamSlotPairBudgetBytes);
-    CHECK(ctx, ffn_slot_bytes_for_triplet(1, 1, 1) == kStreamSlotBytes);
-    CHECK(ctx, ffn_slot_bytes_for_triplet(40ull * 1024ull * 1024ull, 40ull * 1024ull * 1024ull,
-                                          40ull * 1024ull * 1024ull) == kStreamSlotBytes);
-    const uint64_t over_g = 60ull * 1024ull * 1024ull;
-    const uint64_t over_u = 60ull * 1024ull * 1024ull;
-    const uint64_t over_d = 60ull * 1024ull * 1024ull;
-    const uint64_t grown = ffn_slot_bytes_for_triplet(over_g, over_u, over_d);
-    CHECK(ctx, grown > kStreamSlotBytes);
-    CHECK(ctx, grown == align_up(over_g) + align_up(over_u) + align_up(over_d));
-    CHECK(ctx, ggml_slot_pack_ok(align_up(over_g) + align_up(over_u), over_d, grown));
-    CHECK(ctx, !ggml_slot_pack_ok(align_up(over_g) + align_up(over_u), over_d, kStreamSlotBytes));
-    const VramLedger sized = vram_ledger_sized_slots(grown, grown);
-    CHECK(ctx, sized.slot_a_bytes == grown);
-    CHECK(ctx, sized.slot_b_bytes == grown);
-    CHECK(ctx, sized.n_parked_ffn == kMeasured5080Park57);
-    CHECK(ctx, sized.n_streamed_ffn == kMeasured5080Stream7);
-    CHECK(ctx, sized.graph_reserve_bytes == kHourGraphReserveBytes);
-    const std::string sbytes =
-        format_ffn_slot_bytes_line(63, over_g, over_u, over_d, grown);
-    CHECK(ctx, sbytes.find("FFN_SLOT_BYTES layer=63") == 0);
-    CHECK(ctx, sbytes.find("slot=") != std::string::npos);
-    CHECK(ctx, format_vram_ledger(sized).find("extra_park=0") != std::string::npos);
     CHECK(ctx, led.kv20k_bytes == kHourKvReserveBytes);
     CHECK(ctx, led.scratch_bytes == kCudaScratchBytes);
     CHECK(ctx, led.graph_reserve_bytes == kHourGraphReserveBytes);

@@ -80,30 +80,10 @@ inline constexpr bool ggml_slot_pack_ok(uint64_t off, uint64_t nbytes, uint64_t 
     return nbytes != 0 && cap != 0 && off <= cap && nbytes <= cap - off;
 }
 
-// MUL_MAT reads view_src when the named weight is a GGUF mmap view.
-// Bind the parent (CPU_Mapped), then alias the view onto that VRAM.
-inline const void* ggml_bind_storage(const void* tensor, const void* view_src) {
-    return view_src ? view_src : tensor;
-}
-
-// 254e10c: 160 MiB is a floor, not the measured triplet. Packing leftover
-// hops into a full 160 slot left down past the end. Size each A/B slot
-// to align(gate)+align(up)+align(down). Grow if that exceeds 160.
-inline constexpr uint64_t ffn_slot_bytes_for_triplet(uint64_t gate, uint64_t up, uint64_t down,
-                                                     uint64_t align = kTensorAlign) {
-    if (align == 0) {
-        align = 1;
-    }
-    const uint64_t g = (gate + align - 1u) / align * align;
-    const uint64_t u = (up + align - 1u) / align * align;
-    const uint64_t d = (down + align - 1u) / align * align;
-    const uint64_t need = g + u + d;
-    return need > kStreamSlotBytes ? need : kStreamSlotBytes;
-}
-
 // Streamed layer → ggml slot. 63 → A, 62 → B. Other overflow stays CPU
 // (op_offload stream). 2 (extra park buffer) is illegal. -1 = parked.
-// All three Q4s (gate, up, down) must fit in the slot they use.
+// All three Q4s (gate, up, down) must fit in the 160 MiB slot. Packing
+// norms/view_src first is what left ffn_down on CPU_Mapped (9a5f0df).
 inline constexpr int kStreamSlotParked = -1;
 inline constexpr int kStreamSlotA = 0;
 inline constexpr int kStreamSlotB = 1;
