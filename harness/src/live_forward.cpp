@@ -3,7 +3,10 @@
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/graph_hooks.hpp"
 #include "micro_llm/hook_ring.hpp"
+#include "micro_llm/trace_cli.hpp"
 
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,6 +60,14 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::vector<float> hin(kHiddenDim, 0.1f);
     std::vector<float> hout(kHiddenDim, 0.1f);
 
+    const uint32_t n_park =
+        cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ffn_park_layers_that_fit();
+    streamer.set_n_parked_ffn(n_park);
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) *
+                                                       kQ4FfnLayerBytes)
+                     .c_str());
+    const auto t0 = std::chrono::steady_clock::now();
     streamer.begin_session();
     for (uint32_t t = 0; t < n; ++t) {
         hooks.begin_token(t);
@@ -88,7 +99,7 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
         }
         hooks.after_logits(t, t == 0);
         streamer.leave_logits();
-        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() &&
+        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() && !cfg.pack_checkpoint &&
             hooks.table().n_tokens > 0 &&
             (hooks.table().n_tokens % cfg.checkpoint_every) == 0) {
             std::string err;
@@ -99,6 +110,13 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
         }
     }
     streamer.end_session();
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double tps = elapsed > 0.0 ? static_cast<double>(n) / elapsed : 0.0;
+    std::fprintf(stderr, "%s\n", format_tokens_per_sec_line(tps, n, elapsed).c_str());
+    if (cfg.on_stats) {
+        cfg.on_stats(tps, n);
+    }
     s.n_tokens = hooks.table().n_tokens;
     s.message = "stub hour (synthetic activations; not a 27B pass)";
     return s;

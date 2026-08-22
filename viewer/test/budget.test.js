@@ -4,6 +4,8 @@ import {
   CUDA_SCRATCH_BYTES,
   GIB,
   PINNED_GA_WEIGHT_BYTES,
+  PINNED_GA_KV_BYTES,
+  Q4_FFN_WORKSPACE_BYTES,
   SAMPLE_BASE_CTX,
   SAMPLE_WEIGHT_BYTES,
   SERVE_USABLE_HEADLESS_BYTES,
@@ -46,11 +48,17 @@ describe("15.2 serve bar", () => {
     assert.ok(a.stack / GIB > 12.1);
   });
 
-  it("live card stack is GA pin + 0.9 + KV, not 10.8", () => {
+  it("live card stack is GA pin + 0.9 + one FFN workspace + KV, not 10.8", () => {
     const live = liveCardStackAtToken(0);
     const sample = sampleBudgetAtToken(0);
     assert.equal(live.weightBytes, PINNED_GA_WEIGHT_BYTES);
+    assert.ok(live.ffnWorkspaceBytes > 0);
+    assert.ok(live.ffnWorkspaceBytes < 0.2 * GIB);
     assert.ok(live.stack < sample.stack);
     assert.ok(Math.abs(live.weightBytes / GIB - 0.6) < 0.01);
+    const parked = PINNED_GA_KV_BYTES + CUDA_SCRATCH_BYTES + 64 * Q4_FFN_WORKSPACE_BYTES;
+    assert.ok(parked > SERVE_USABLE_HEADLESS_BYTES);
+    const streamed = PINNED_GA_KV_BYTES + CUDA_SCRATCH_BYTES + Q4_FFN_WORKSPACE_BYTES;
+    assert.ok(streamed < SERVE_USABLE_HEADLESS_BYTES);
   });
 });

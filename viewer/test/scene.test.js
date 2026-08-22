@@ -16,6 +16,14 @@ describe("space look: points and streaks, not a bin grid", () => {
     assert.equal(glyphs.includes("BoxGeometry"), false);
   });
 
+  it("paints direction up the tower, not a compass", () => {
+    assert.match(scene, /tokenDirection/);
+    assert.match(scene, /dirLine/);
+    assert.equal(/\bNSEW\b/.test(scene), false);
+    assert.equal(/compass/i.test(scene), false);
+    assert.equal(/\bnorth\b/i.test(scene), false);
+  });
+
   it("paints fired bits, packs, and spine as points / thin lines", () => {
     assert.match(scene, /THREE\.Points/);
     assert.match(scene, /THREE\.LineSegments/);

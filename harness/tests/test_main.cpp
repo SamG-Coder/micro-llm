@@ -23,6 +23,7 @@ int main() {
         {"hotspot_ui_files", test_hotspot_ui_files},
         {"hook_ring_encode", test_hook_ring_encode},
         {"hour_cli_resolve", test_hour_cli_resolve},
+        {"ffn_stream_budget", test_ffn_stream_budget},
     };
 
     int failed = 0;

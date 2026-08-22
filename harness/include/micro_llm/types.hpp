@@ -26,6 +26,9 @@ inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
+// Host ping-pong is two scratch buffers. VRAM stream slot is ONE FFN.
+// Parked FFN layers are a separate resident set (never all 64).
+inline constexpr uint32_t kMaxResidentFfnLayers = 1;
 inline constexpr uint32_t kFloorBitsetBytes =
     (kNLayers * kFfnIntermediate) / 8u;                  // 139264 ~ 140KB
 inline constexpr uint32_t kVocabBitsetBytes = (kVocabSize + 7u) / 8u;
@@ -56,6 +59,12 @@ inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  /
 inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
 inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
 inline constexpr uint64_t kDefaultServeCtx = 8192ull;
+// Bob/Dave/Bruce lock: pinned 16 GA + KV already on the 5080. Not 64 FFNs.
+inline constexpr uint64_t kPinnedGaKvBytes = (69ull * kGiB) / 10ull;  // 6.9 GiB
+inline constexpr uint64_t kHourCardSoftBytes = 14ull * kGiB;          // park under 14
+// Extra GGUF block (block_count=65, nextn_predict_layers=1) is MTP. Not in
+// the 64-layer hook ring and not in the card stack.
+inline constexpr uint32_t kMtpExtraBlocks = 1;
 
 // Refuse unless serve_ok is present and true. Then refuse if
 // file_size + cuda_scratch + kv_bytes_per_token * ctx > usable (15.2 GiB default).
@@ -82,6 +91,69 @@ inline constexpr bool remnant_serve_allowed(
         return false;
     }
     return kv <= (after_w - cuda_scratch);
+}
+
+// Park as many FFN layers as fit under the 14GB soft card:
+// GA+KV + 0.9 + parked FFN + one stream slot. Never all 64. 15.2 is hard.
+inline constexpr uint32_t ffn_park_layers_that_fit(
+    uint64_t card = kHourCardSoftBytes,
+    uint64_t pinned = kPinnedGaKvBytes,
+    uint64_t scratch = kCudaScratchBytes,
+    uint64_t stream_slot = kQ4FfnLayerBytes) {
+    const uint64_t need = pinned + scratch + stream_slot;
+    if (need >= card) {
+        return 0;
+    }
+    uint32_t n = static_cast<uint32_t>((card - need) / kQ4FfnLayerBytes);
+    if (n >= kNLayers) {
+        n = kNLayers - 1u;
+    }
+    return n;
+}
+
+inline constexpr uint64_t hour_park_stream_card_bytes(uint32_t n_park) {
+    return kPinnedGaKvBytes + kCudaScratchBytes +
+           static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes + kQ4FfnLayerBytes;
+}
+
+inline constexpr bool hour_park_stream_fits(uint32_t n_park) {
+    const uint64_t stack = hour_park_stream_card_bytes(n_park);
+    return n_park < kNLayers && stack <= kHourCardSoftBytes && stack <= kServeUsableBytes;
+}
+
+// Stream-only (no parked FFN): 6.9 + 0.9 + one workspace.
+inline constexpr uint64_t streamed_hour_card_bytes(
+    uint64_t ffn_workspace = kQ4FfnLayerBytes,
+    uint64_t pinned = kPinnedGaKvBytes,
+    uint64_t cuda_scratch = kCudaScratchBytes) {
+    return pinned + cuda_scratch + ffn_workspace;
+}
+
+inline constexpr bool streamed_hour_card_fits(
+    uint64_t ffn_workspace = kQ4FfnLayerBytes,
+    uint64_t usable = kServeUsableBytes,
+    uint64_t pinned = kPinnedGaKvBytes,
+    uint64_t cuda_scratch = kCudaScratchBytes) {
+    const uint64_t stack = streamed_hour_card_bytes(ffn_workspace, pinned, cuda_scratch);
+    return stack <= usable && stack <= kHourCardSoftBytes;
+}
+
+inline constexpr bool parked_all_ffn_exceeds_card(
+    uint32_t n_ffn_layers = kNLayers,
+    uint64_t usable = kServeUsableBytes) {
+    return hour_park_stream_card_bytes(n_ffn_layers) > usable || n_ffn_layers >= kNLayers;
+}
+
+// Hook ring is 64. block_count=65 is 64 + MTP; do not count the extra block.
+inline constexpr bool gguf_block_count_is_hybrid(uint32_t block_count) {
+    return block_count == kNLayers || block_count == kNLayers + kMtpExtraBlocks;
+}
+
+inline constexpr uint32_t hook_layer_count_from_blocks(uint32_t block_count) {
+    if (block_count == kNLayers + kMtpExtraBlocks) {
+        return kNLayers;
+    }
+    return block_count;
 }
 
 // FFN keep width must be a multiple of 256 (Q4_K superblock).

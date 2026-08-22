@@ -383,7 +383,7 @@ bool checkpoint_prune_table(const PruneTable& table, const std::string& path, st
         return false;
     }
     const std::string tmp = path + ".tmp";
-    // Scores / prune table only. Do not pack or cut weights from a 2k dump.
+    // Scores / prune table only (~18MB MLPT). Do not pack a remnant GGUF.
     if (!save_prune_table(table, tmp, err)) {
         return false;
     }

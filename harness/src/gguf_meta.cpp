@@ -240,6 +240,8 @@ bool read_gguf_meta(const std::string& path, GgufKv& out, std::string* err) {
                     out.n_embd = v;
                 } else if (key == arch_prefix + "feed_forward_length") {
                     out.n_ff = v;
+                } else if (key == arch_prefix + "nextn_predict_layers") {
+                    out.n_nextn = v;
                 }
             }
             if (key == "qwen35.block_count" || key == "qwen3next.block_count") {
@@ -250,6 +252,9 @@ bool read_gguf_meta(const std::string& path, GgufKv& out, std::string* err) {
             } else if (key == "qwen35.feed_forward_length" ||
                        key == "qwen3next.feed_forward_length") {
                 out.n_ff = v;
+            } else if (key == "qwen35.nextn_predict_layers" ||
+                       key == "qwen3next.nextn_predict_layers") {
+                out.n_nextn = v;
             }
         } else if (static_cast<GgufType>(type) == GgufType::ARRAY) {
             uint32_t et = 0;
@@ -327,13 +332,22 @@ bool read_gguf_meta(const std::string& path, GgufKv& out, std::string* err) {
     return true;
 }
 
+uint32_t gguf_hook_layer_count(const GgufKv& m) {
+    return hook_layer_count_from_blocks(m.n_layers);
+}
+
 bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m) {
     const bool arch_ok = m.architecture == "qwen35" || m.architecture == "qwen3next" ||
                          m.architecture == "qwen35moe";
     if (!arch_ok && m.architecture.find("qwen3") == std::string::npos) {
         return false;
     }
-    if (m.n_layers != 0 && m.n_layers != kNLayers) {
+    // 64, or 65 with MTP extra block (nextn_predict_layers=1). Hook ring stays 64.
+    if (m.n_layers != 0 && !gguf_block_count_is_hybrid(m.n_layers)) {
+        return false;
+    }
+    if (m.n_layers == kNLayers + kMtpExtraBlocks && m.n_nextn != 0 &&
+        m.n_nextn != kMtpExtraBlocks) {
         return false;
     }
     if (m.n_embd != 0 && m.n_embd != kHiddenDim) {
@@ -342,13 +356,15 @@ bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m) {
     if (m.n_ff != 0 && m.n_ff != kFfnIntermediate) {
         return false;
     }
-    return arch_ok || (m.n_layers == kNLayers && m.n_embd == kHiddenDim);
+    const uint32_t hooks = gguf_hook_layer_count(m);
+    return arch_ok || (hooks == kNLayers && m.n_embd == kHiddenDim);
 }
 
 bool write_gguf_kv_stub(const std::string& path, const std::string& architecture,
                         bool serve_ok_present, bool serve_ok, uint32_t n_layers,
                         uint32_t n_embd, uint32_t n_ff, std::string* err,
-                        const std::vector<uint32_t>* keep_channel_n) {
+                        const std::vector<uint32_t>* keep_channel_n,
+                        uint32_t nextn_predict_layers) {
     std::ofstream os(path, std::ios::binary);
     if (!os) {
         if (err) {
@@ -362,6 +378,9 @@ bool write_gguf_kv_stub(const std::string& path, const std::string& architecture
         n_kv += 1;
     }
     if (keep_channel_n && !keep_channel_n->empty()) {
+        n_kv += 1;
+    }
+    if (nextn_predict_layers != 0) {
         n_kv += 1;
     }
     os.write("GGUF", 4);
@@ -384,6 +403,12 @@ bool write_gguf_kv_stub(const std::string& path, const std::string& architecture
     write_string(os, prefix + "feed_forward_length");
     write_u32(os, static_cast<uint32_t>(GgufType::UINT32));
     write_u32(os, n_ff);
+
+    if (nextn_predict_layers != 0) {
+        write_string(os, prefix + "nextn_predict_layers");
+        write_u32(os, static_cast<uint32_t>(GgufType::UINT32));
+        write_u32(os, nextn_predict_layers);
+    }
 
     if (serve_ok_present) {
         write_string(os, kKvServeOk);

@@ -1,6 +1,7 @@
 #include "micro_llm/streamer.hpp"
 #include "micro_llm/ffn_reduce.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 #if defined(__linux__)
@@ -55,6 +56,16 @@ void TraceStreamer::begin_session() {
     ensure_scratch();
     try_lock_host_pages();
     pin_resident();
+    cuda_bind_count_ = 0;
+    if (cfg_.log_cuda_ffn) {
+        std::fprintf(stderr,
+                     "ffn_cuda_park n=%u bytes=%llu stream_slot=%zu card_stack=%llu "
+                     "soft=14GiB hard=15.2GiB never_64=1 ngl=0\n",
+                     cfg_.n_parked_ffn,
+                     static_cast<unsigned long long>(parked_ffn_bytes()),
+                     cfg_.ffn_scratch_bytes,
+                     static_cast<unsigned long long>(card_stack_bytes()));
+    }
 }
 
 void TraceStreamer::end_session() {
@@ -106,6 +117,9 @@ bool TraceStreamer::prefetch_ffn(uint32_t layer) {
     if (!session_open_ || layer >= cfg_.n_layers) {
         return false;
     }
+    if (ffn_is_parked(layer)) {
+        return true;  // already on CUDA; no host scratch
+    }
     ensure_scratch();
     prefetch_buf_ = 1 - compute_buf_;
     prefetch_layer_ = layer;
@@ -121,6 +135,19 @@ bool TraceStreamer::prefetch_ffn(uint32_t layer) {
 bool TraceStreamer::bind_ffn(uint32_t layer) {
     if (!session_open_ || layer >= cfg_.n_layers) {
         return false;
+    }
+    ++cuda_bind_count_;
+    const bool parked = ffn_is_parked(layer);
+    if (cfg_.log_cuda_ffn && cuda_bind_count_ <= cfg_.n_layers) {
+        std::fprintf(stderr, "ffn_cuda_bind layer=%u parked=%d stream=%d workspace=%zu\n",
+                     layer, parked ? 1 : 0, parked ? 0 : 1, cfg_.ffn_scratch_bytes);
+    }
+    if (parked) {
+        return true;
+    }
+    // One VRAM stream slot. Evict the previous unparked layer.
+    if (compute_layer_ != ~0u && compute_layer_ != layer) {
+        evict_ffn(compute_layer_);
     }
     if (prefetch_outstanding_ && prefetch_layer_ == layer) {
         compute_buf_ = prefetch_buf_;

@@ -10,6 +10,7 @@ import {
   rarityGlow,
   vocabBinIndex,
 } from "./constants.js";
+import { tokenDirection } from "./direction.js";
 import { glyphScale, makeGlyphSprite, makeHeadPoint, makeStreakLine, pointSpriteTexture } from "./glyphs.js";
 import { packSpikeBit } from "./ring.js";
 
@@ -275,6 +276,12 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   vocab.geo.attributes.position.needsUpdate = true;
   scene.add(vocab.pts);
 
+  const dirLine = makeStreakLine(streakRes);
+  dirLine.material.opacity = 0;
+  scene.add(dirLine);
+  let dirFlash = 0;
+  let dirKind = "ffn";
+
   const flyers = [];
 
   function disposeFlyer(fl) {
@@ -347,6 +354,22 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     if (extra.word !== undefined) {
       spawnToken(extra.word, record.sampledId);
     }
+    const dir = tokenDirection(record, {
+      hottestLayer: extra.hottestLayer,
+      ffnBitCount: extra.ffnBitCount,
+    });
+    if (dir && dir.length > 0) {
+      dirFlash = lerp(dirFlash, 1, FLASH_RISE);
+      dirKind = dir.kind;
+      const y1 = layerY(dir.heading);
+      const lenScale = Math.min(2.8, 0.35 + Math.log1p(dir.length) * 0.28);
+      dirLine.geometry.setPositions([0, Math.max(-0.4, y1 - lenScale), 0, 0, y1, 0]);
+      if (dirKind === "pack") {
+        dirLine.material.color.setRGB(0.78, 0.44, 0.2);
+      } else {
+        dirLine.material.color.setRGB(0.28, 0.64, 0.8);
+      }
+    }
   }
 
   function paintClouds(dt) {
@@ -408,6 +431,10 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     }
     vocab.geo.attributes.color.needsUpdate = true;
 
+    dirFlash = lerp(dirFlash, 0, FLASH_FALL);
+    dirLine.material.opacity = dirFlash * 0.88;
+    dirLine.material.resolution.copy(streakRes);
+
     for (let i = flyers.length - 1; i >= 0; i--) {
       const fl = flyers[i];
       fl.age += dt;
@@ -466,6 +493,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
 
   return {
     applyToken,
+    tokenDirection,
     spawnToken,
     dispose() {
       cancelAnimationFrame(raf);
@@ -489,6 +517,8 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       ffnStreaks.lines.material.dispose();
       vocab.pts.material.dispose();
       axis.material.dispose();
+      dirLine.geometry.dispose();
+      dirLine.material.dispose();
       if (renderer.domElement.parentNode) {
         renderer.domElement.parentNode.removeChild(renderer.domElement);
       }

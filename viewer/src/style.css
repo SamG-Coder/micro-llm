@@ -76,6 +76,16 @@ body {
   letter-spacing: 0.04em;
 }
 
+#tps-wrap {
+  margin-left: 10px;
+  font-size: 12px;
+}
+
+#tps {
+  font-variant-numeric: tabular-nums;
+  color: #c5cdd8;
+}
+
 #hud-tr .meta {
   margin-top: 4px;
   color: var(--accent);

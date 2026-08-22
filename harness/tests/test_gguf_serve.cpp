@@ -24,6 +24,19 @@ void test_gguf_serve_gate(TestContext& ctx) {
     CHECK(ctx, meta.n_embd == kHiddenDim);
     CHECK(ctx, meta.n_ff == kFfnIntermediate);
     CHECK(ctx, gguf_looks_like_qwen27b_hybrid(meta));
+    CHECK(ctx, gguf_hook_layer_count(meta) == kNLayers);
+
+    const std::string mtp_path = "test_serve_mtp65.gguf";
+    CHECK(ctx, write_gguf_kv_stub(mtp_path, "qwen35", true, true, kNLayers + 1, kHiddenDim,
+                                 kFfnIntermediate, nullptr, nullptr, 1));
+    GgufKv mtp;
+    CHECK(ctx, read_gguf_meta(mtp_path, mtp));
+    CHECK(ctx, mtp.n_layers == kNLayers + 1);
+    CHECK(ctx, mtp.n_nextn == 1);
+    CHECK(ctx, gguf_looks_like_qwen27b_hybrid(mtp));
+    CHECK(ctx, gguf_hook_layer_count(mtp) == kNLayers);
+    CHECK(ctx, hook_layer_count_from_blocks(mtp.n_layers) == kNLayers);
+    std::remove(mtp_path.c_str());
     CHECK(ctx, meta.serve_ok_present);
     CHECK(ctx, meta.serve_ok);
 

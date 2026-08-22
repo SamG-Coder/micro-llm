@@ -19,6 +19,7 @@ const hud = {
   tokens: document.getElementById("tokens"),
   layer: document.getElementById("layer"),
   flags: document.getElementById("flags"),
+  tps: document.getElementById("tps"),
 };
 const fill = document.getElementById("budget-fill");
 const budgetNums = document.getElementById("budget-nums");
@@ -44,13 +45,16 @@ function paintBudget(tokenIndex) {
     const b = liveCardStackAtToken(tokenIndex, {
       weightBytes: liveAttach?.weightBytes,
       baseCtx: liveAttach?.ctx,
+      ffnWorkspaceBytes: liveAttach?.ffnWorkspaceBytes,
     });
     fill.style.width = `${(b.fill * 100).toFixed(2)}%`;
     fill.className = `fill ${b.color}`;
     budgetNums.textContent = `${formatGiB(b.stack)} / ${formatGiB(b.usable)} GiB`;
     budgetParts.textContent =
       `GA pin ${formatGiB(b.weightBytes)}  cuda ${formatGiB(b.cudaBytes)}  ` +
-      `kv ${formatGiB(b.kvBytes)}  ctx ${b.ctx}  card stack  no host GGUF`;
+      `park ${formatGiB(liveAttach?.ffnParkedBytes ?? 0)}  ` +
+      `ffn ${formatGiB(b.ffnWorkspaceBytes)}  kv ${formatGiB(b.kvBytes)}  ` +
+      `ctx ${b.ctx}  parked+stream  no host GGUF`;
     if (capLabel) capLabel.textContent = "15.2 card stack";
     return;
   }
@@ -67,10 +71,14 @@ function paintBudget(tokenIndex) {
 function applyRecord(rec, mask) {
   const bins = firedBinsFromBitset(rec.ffnFired, mask);
   const word = decodeId(rec.sampledId);
-  map.applyToken(rec, bins, { word });
+  const layer = hottestLayerThisToken(rec.ffnFired, mask);
+  let ffnBitCount = 0;
+  for (let i = 0; i < bins.length; i++) {
+    if (bins[i]) ffnBitCount += 1;
+  }
+  map.applyToken(rec, bins, { word, hottestLayer: layer, ffnBitCount });
   played += 1;
   hud.tokens.textContent = String(played);
-  const layer = hottestLayerThisToken(rec.ffnFired, mask);
   hud.layer.textContent = layer === null ? "—" : `L${layer}`;
   const special = (rec.flags & FLAG_SPECIAL_OR_HIGH_LOSS) !== 0;
   hud.flags.textContent = special ? "special/high-loss" : "";
@@ -105,6 +113,12 @@ function enterLive(attach) {
 function onHost(parsed) {
   if (parsed.kind === "attach") {
     enterLive(parsed.attach);
+    return;
+  }
+  if (parsed.kind === "stats") {
+    if (hud.tps && parsed.tokensPerSec != null) {
+      hud.tps.textContent = Number(parsed.tokensPerSec).toFixed(2);
+    }
     return;
   }
   if (parsed.kind === "record") {

@@ -50,6 +50,14 @@ void test_layer_hooked_trailer(TestContext& ctx) {
     const size_t base = 80ull + 64ull * 17408ull * 16ull + 48ull * 24ull + 139264ull + 31040ull;
     CHECK(ctx, base == 17997328ull);
     CHECK(ctx, sz == base + 8);
+    CHECK(ctx, sz < 20ull * 1024ull * 1024ull);  // ~18MB scores; do not pack a GGUF
+    {
+        std::ifstream magis(path, std::ios::binary);
+        char mag[4] = {};
+        magis.read(mag, 4);
+        CHECK(ctx, mag[0] == 'M' && mag[1] == 'L' && mag[2] == 'P' && mag[3] == 'T');
+        CHECK(ctx, !(mag[0] == 'G' && mag[1] == 'G' && mag[2] == 'U' && mag[3] == 'F'));
+    }
 
     PruneTable loaded;
     CHECK(ctx, load_prune_table(loaded, path, &err));
