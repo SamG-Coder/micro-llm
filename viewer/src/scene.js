@@ -58,7 +58,7 @@ export function createMap(container) {
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
 
-  const packGeo = new THREE.OctahedronGeometry(0.22, 0);
+  const packGeo = new THREE.OctahedronGeometry(0.28, 0);
   const packMat = new THREE.MeshStandardMaterial({
     color: 0x1c2433,
     emissive: 0x000000,
@@ -166,7 +166,7 @@ export function createMap(container) {
     for (let i = 0; i < FFN_COUNT; i++) {
       if (bins[i]) {
         ffnFlash[i] = 1;
-        ffnHeat[i] = Math.min(1, ffnHeat[i] + 0.16);
+        ffnHeat[i] = 0.35;
       }
     }
     for (let p = 0; p < N_PACKS; p++) {
@@ -190,15 +190,15 @@ export function createMap(container) {
 
   function paintInstances() {
     for (let p = 0; p < N_PACKS; p++) {
-      packFlash[p] *= 0.86;
+      packFlash[p] *= 0.82;
       const pulse = packFlash[p];
-      tmpColor.setRGB(0.12 + pulse * 0.88, 0.16 + pulse * 0.55, 0.2);
+      tmpColor.setRGB(0.14 + pulse * 0.86, 0.13 + pulse * 0.55, 0.16 * (1 - pulse));
       packs.setColorAt(p, tmpColor);
       const layer = layerFromPackId(p);
       dummy.position.set(-1.15, layerY(layer), 0);
-      const s = 1 + pulse * 0.55;
+      const s = 1 + pulse * 0.9;
       dummy.scale.set(s, s, s);
-      dummy.rotation.set(0.2, 0.4 + pulse, 0);
+      dummy.rotation.set(0.2, 0.4 + pulse * 1.2, 0);
       dummy.updateMatrix();
       packs.setMatrixAt(p, dummy.matrix);
     }
@@ -222,14 +222,14 @@ export function createMap(container) {
     spineMat.emissiveIntensity = 0.55 + 0.55 * Math.max(...spineSpark);
 
     for (let i = 0; i < FFN_COUNT; i++) {
-      ffnFlash[i] *= 0.82;
-      ffnHeat[i] *= 0.992;
+      ffnFlash[i] *= 0.8;
+      ffnHeat[i] *= 0.9;
       const f = ffnFlash[i];
       const h = ffnHeat[i];
-      if (f < 0.01 && h < 0.02) {
+      if (f < 0.02 && h < 0.04) {
         tmpColor.setRGB(0.07, 0.09, 0.12);
       } else {
-        tmpColor.setRGB(0.12 + f * 0.88 + h * 0.35, 0.08 + f * 0.2 + h * 0.08, 0.14 + f * 0.4 + h * 0.18);
+        tmpColor.setRGB(0.14 + f * 0.86 + h * 0.25, 0.06 + f * 0.18 + h * 0.06, 0.16 + f * 0.35 + h * 0.12);
       }
       ffn.setColorAt(i, tmpColor);
     }

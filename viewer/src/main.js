@@ -4,7 +4,7 @@ import { formatGiB, sampleBudgetAtToken } from "./budget.js";
 import {
   firedBinsFromBitset,
   generateSampleHTR1,
-  lastFiredLayer,
+  hottestLayerThisToken,
   parseHTR1,
 } from "./ring.js";
 import { createMap } from "./scene.js";
@@ -48,13 +48,17 @@ function step() {
   if (spoken.length > 96) spoken.shift();
   hud.out.textContent = spoken.join("");
   hud.tokens.textContent = String(rec.tokenIndex + 1);
-  const layer = lastFiredLayer(rec.ffnFired);
+  const layer = hottestLayerThisToken(rec.ffnFired);
   hud.layer.textContent = layer === null ? "—" : `L${layer}`;
   const special = (rec.flags & FLAG_SPECIAL_OR_HIGH_LOSS) !== 0;
   hud.flags.textContent = special ? "special/high-loss" : "";
   paintBudget(rec.tokenIndex);
 
-  cursor = (cursor + 1) % sample.records.length;
+  cursor += 1;
+  if (cursor >= sample.records.length) {
+    cursor = 0;
+    spoken.push("\n");
+  }
 }
 
 paintBudget(0);

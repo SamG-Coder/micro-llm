@@ -222,6 +222,24 @@ export function lastFiredLayer(ffnFired) {
   return layers.length ? layers[layers.length - 1] : null;
 }
 
+// Layer with the most fired channels this token. Quiet = not-this-token.
+export function hottestLayerThisToken(ffnFired) {
+  let best = null;
+  let bestN = 0;
+  for (let layer = 0; layer < N_LAYERS; layer++) {
+    let n = 0;
+    const base = layer * N_FFN;
+    for (let ch = 0; ch < N_FFN; ch++) {
+      if (bitTest(ffnFired, base + ch)) n++;
+    }
+    if (n > bestN) {
+      bestN = n;
+      best = layer;
+    }
+  }
+  return best;
+}
+
 // Sparse, deterministic sample. A few FFN channels per layer, a few pack spikes.
 // Quiet layers are not-this-token. Does not invent unwired/dead/weak/floor.
 export function generateSampleRecords(seed = 42, nTokens = 48) {

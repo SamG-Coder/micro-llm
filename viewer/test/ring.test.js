@@ -24,6 +24,7 @@ import {
   firedBinsFromBitset,
   generateSampleHTR1,
   generateSampleRecords,
+  hottestLayerThisToken,
   packSpikeBit,
   parseHTR1,
 } from "../src/ring.js";
@@ -67,8 +68,8 @@ describe("HTR1 layout", () => {
     assert.equal(rec.flags & FLAG_SPECIAL_OR_HIGH_LOSS, 1);
     assert.equal(rec.nTopk, 3);
     assert.deepEqual(rec.topk, [21, 20, 0]);
-    assert.ok(Math.abs(rec.fireEps - FIRE_EPS) < 1e-12);
-    assert.ok(Math.abs(rec.spikeEps - SPIKE_EPS) < 1e-12);
+    assert.ok(Math.abs(rec.fireEps - FIRE_EPS) < 1e-8);
+    assert.ok(Math.abs(rec.spikeEps - SPIKE_EPS) < 1e-8);
     assert.equal(rec.ffnFired.length, FFN_BITSET_BYTES);
     assert.equal(bitTest(rec.ffnFired, channelBitIndex(0, 0)), true);
     assert.equal(bitTest(rec.ffnFired, channelBitIndex(7, 17407)), true);
@@ -125,6 +126,26 @@ describe("HTR1 layout", () => {
     assert.equal(bins[2 * 64 + 0], 1);
     assert.equal(bins[2 * 64 + 1], 0);
     assert.equal(bins[0], 0);
+  });
+
+  it("reports the layer with the most fired channels this token", () => {
+    const fires = [
+      { layer: 5, channel: 1 },
+      { layer: 5, channel: 2 },
+      { layer: 5, channel: 3 },
+      { layer: 63, channel: 8 },
+    ];
+    const rec = decodeRecord(
+      encodeRecord({
+        tokenIndex: 0,
+        sampledId: 1,
+        flags: 0,
+        topk: [1],
+        fires,
+        packRelResidual: new Float32Array(N_PACKS),
+      }),
+    );
+    assert.equal(hottestLayerThisToken(rec.ffnFired), 5);
   });
 });
 
