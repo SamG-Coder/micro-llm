@@ -29,6 +29,8 @@ MIT.
 - Live forward: `LlamaCppLiveForwardBackend` attaches to llama.cpp `cb_eval`
   on the `qwen35` graph. `StubLiveForwardBackend` is tests-only.
 - CLI `micro-llm-trace` for the coding-assistant hour
+- Native sample hotspot window: no args or `--ui` opens the committed
+  `ui/` map. Does not load a GGUF. Does not start the hour.
 
 It does **not** dequant a whole FFN to FP16, does **not** allocate a
 `[chunk x 17408]` scratch, and does **not** pin `lm_head` next to embed.
@@ -47,12 +49,17 @@ include/micro_llm/
   serve.hpp          remnant_may_serve from a remnant GGUF
   graph_hooks.hpp    llama.cpp tensor-name matcher (compile-tested)
   live_forward.hpp   stub + llama.cpp backends
+  hotspot_ui.hpp     locate committed UI; Windows WebView2 host
   micro_llm.hpp      umbrella
 src/
   cli_dump.cpp       synthetic traffic → one prune table
-  cli_trace.cpp      micro-llm-trace (real hour when weights + llama.cpp)
+  cli_trace.cpp      micro-llm-trace (window by default; hour with --model)
+  cli_view.cpp       micro-llm-view (window only; WIN32 GUI on Windows)
+  hotspot_ui.cpp     UI path lookup
+  hotspot_ui_win32.cpp  WebView2 (MSVC / Windows)
   llama_forward.cpp  llama.cpp attach (ifdef MICRO_LLM_HAS_LLAMA)
-tests/               serialize, pack id, floor, dead/spike, hooked, serve, live
+ui/                  committed static hotspot map (no npm at runtime)
+tests/               serialize, pack id, floor, dead/spike, hooked, serve, live, ui
 ```
 
 ## Build and test
@@ -71,6 +78,39 @@ CPU-only is the default. CUDA kernel when `nvcc` is present:
 ```bash
 cmake -S . -B build -DMICRO_LLM_CUDA=ON
 ```
+
+## Hotspot window (sample map, no npm)
+
+Opening the built exe with no args or `--ui` shows the sample hotspot map.
+That path does **not** load a GGUF and does **not** start the hour.
+`--n-predict` is unchanged (default 64) and only applies to `--model`.
+
+Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
+to the exe). The page is a 3D volume: tokens fly through the tower, spine
+sparks then heat, packs pulse, FFN bins flash from fired bits on kept
+channels only.
+
+**Evergreen WebView2 runtime** is required. Windows 11 and any machine with
+current Microsoft Edge usually already have it. If the window fails to
+create, install the Evergreen bootstrapper:
+
+https://go.microsoft.com/fwlink/p/?LinkId=2124703
+
+Docs: https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+
+```text
+micro-llm-trace.exe
+micro-llm-trace.exe --ui
+micro-llm-view.exe
+micro-llm-trace.exe --ui-check
+```
+
+`ui/` is a committed Vite build of `viewer/`. Do not run `npm install` or
+`npm start` to open the map. Rebuild the snapshot only if you change
+`viewer/` (`viewer/scripts/sync-harness-ui.sh`).
+
+On Linux the same flags locate the files and print that the native window
+is Windows + WebView2.
 
 ## How to run the hour (local coding assistant)
 

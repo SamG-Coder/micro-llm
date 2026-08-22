@@ -20,6 +20,7 @@ int main() {
         {"live_forward_backends", test_live_forward_backends},
         {"graph_hook_names", test_graph_hook_names},
         {"gguf_serve_gate", test_gguf_serve_gate},
+        {"hotspot_ui_files", test_hotspot_ui_files},
     };
 
     int failed = 0;

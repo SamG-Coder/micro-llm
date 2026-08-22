@@ -17,8 +17,6 @@ const TOKEN_MS = 160;
 const hud = {
   tokens: document.getElementById("tokens"),
   layer: document.getElementById("layer"),
-  out: document.getElementById("out"),
-  now: document.getElementById("now"),
   flags: document.getElementById("flags"),
 };
 const fill = document.getElementById("budget-fill");
@@ -32,7 +30,6 @@ const map = createMap(document.getElementById("stage"), {
   presentPacks: presentPacks(keepMask),
 });
 
-const spoken = [];
 let cursor = 0;
 let played = 0;
 
@@ -44,25 +41,19 @@ function paintBudget(tokenIndex) {
   budgetParts.textContent =
     `w ${formatGiB(b.weightBytes)}  cuda ${formatGiB(b.cudaBytes)}  ` +
     `kv ${formatGiB(b.kvBytes)}  ctx ${b.ctx}  serve_ok  no vision` +
-    `  · labeled example`;
+    `  · labeled example 10.8 + 0.9 + KV`;
 }
 
 function step() {
   const rec = sample.records[cursor];
   const bins = firedBinsFromBitset(rec.ffnFired, keepMask);
-  map.applyToken(rec, bins);
-
   const word = decodeId(rec.sampledId);
-  spoken.push(word);
-  if (spoken.length > 120) spoken.shift();
+  map.applyToken(rec, bins, { word });
+
   played += 1;
-  hud.out.textContent = spoken.join("");
-  hud.now.textContent = word === "\n" ? "\\n" : word === " " ? "␣" : word;
   hud.tokens.textContent = String(played);
-  hud.now.classList.remove("tick");
   hud.tokens.classList.remove("tick");
-  void hud.now.offsetWidth;
-  hud.now.classList.add("tick");
+  void hud.tokens.offsetWidth;
   hud.tokens.classList.add("tick");
   const layer = hottestLayerThisToken(rec.ffnFired, keepMask);
   hud.layer.textContent = layer === null ? "—" : `L${layer}`;
@@ -73,7 +64,6 @@ function step() {
   cursor += 1;
   if (cursor >= sample.records.length) {
     cursor = 0;
-    spoken.push("\n");
   }
 }
 

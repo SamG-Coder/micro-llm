@@ -34,3 +34,4 @@ void test_device_tap_api(TestContext& ctx);
 void test_live_forward_backends(TestContext& ctx);
 void test_graph_hook_names(TestContext& ctx);
 void test_gguf_serve_gate(TestContext& ctx);
+void test_hotspot_ui_files(TestContext& ctx);
