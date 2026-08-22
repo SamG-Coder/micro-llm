@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>micro-llm hotspot — sample ring</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="hud">
+        <div>
+          <span class="badge">SAMPLE</span>
+          <span class="k"> · no live attach · HTR1 · 64-layer 3+1</span>
+        </div>
+        <div>
+          <span class="k">tokens</span> <span class="v" id="tokens">0</span>
+          <span class="k"> layer</span> <span class="v" id="layer">—</span>
+          <span class="v" id="flags"></span>
+        </div>
+        <div id="out"></div>
+      </header>
+      <div id="stage"></div>
+      <footer id="budget">
+        <div class="cap">
+          <span>15.2 serve stack</span>
+          <span id="budget-nums">—</span>
+        </div>
+        <div class="track"><div id="budget-fill" class="fill green"></div></div>
+        <div class="parts" id="budget-parts"></div>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

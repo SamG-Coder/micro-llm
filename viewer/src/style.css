@@ -1,0 +1,102 @@
+:root {
+  color-scheme: dark;
+  --bg: #07080c;
+  --ink: #d7dde8;
+  --muted: #7d8796;
+  --line: #1c2230;
+  --green: #3dce7a;
+  --yellow: #e3c14a;
+  --red: #e35a5a;
+  --accent: #2ee6d6;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#hud {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px 24px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+#hud .k {
+  color: var(--muted);
+}
+
+#hud .v {
+  color: var(--ink);
+}
+
+#out {
+  grid-column: 1 / -1;
+  min-height: 2.6em;
+  color: #e8eef7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+#stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#budget {
+  border-top: 1px solid var(--line);
+  padding: 10px 14px 12px;
+}
+
+#budget .cap {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+#budget .track {
+  height: 10px;
+  background: #121722;
+  border: 1px solid #2a3142;
+}
+
+#budget .fill {
+  height: 100%;
+  width: 0%;
+}
+
+#budget .fill.green { background: var(--green); }
+#budget .fill.yellow { background: var(--yellow); }
+#budget .fill.red { background: var(--red); }
+
+#budget .parts {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.badge {
+  color: var(--accent);
+}

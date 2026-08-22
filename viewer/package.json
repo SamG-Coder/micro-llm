@@ -1,0 +1,18 @@
+{
+  "name": "micro-llm-viewer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "vite --host",
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.11"
+  }
+}
