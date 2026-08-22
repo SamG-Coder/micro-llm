@@ -26,9 +26,10 @@ inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 160u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 340u * 1024u * 1024u;
-// Dave/James: one Q4 FFN layer is gate+up+down ≈ 160 MiB. The 80 MiB
-// "measured" figure was one tensor, not the layer — 80 MiB slots
-// truncated the H2D and real_h2d stayed 0. Each slot is a full layer.
+// Dave/James: one Q4 FFN layer is gate+up+down. The 80 MiB "measured"
+// figure was one tensor, not the layer. 160 MiB is the A/B floor.
+// 254e10c: down bind FAIL off past 160 — the real triplet + align can
+// exceed 160. Runtime slots are max(160, gate+up+down+align).
 inline constexpr uint64_t kQ4FfnLayerBytesMeasured5080 = 160ull * 1024ull * 1024ull;
 inline constexpr uint64_t kStreamSlotBytes = 160ull * 1024ull * 1024ull;
 inline constexpr uint64_t kMeasured5080Cuda0MiB = 9851ull;

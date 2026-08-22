@@ -38,11 +38,13 @@ inline constexpr uint64_t vram_ledger_free_to_hard(const VramLedger& v) {
 }
 
 // Slots A/B first, then leftover under soft-14 becomes parked FFN.
+// slot_A/B start at the 160 MiB floor. After measure, apply the real
+// triplet size — do not drop park below 57 to "make room".
 inline constexpr VramLedger vram_ledger_slots_first(
     uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080,
     uint64_t soft = kHourCardSoftBytes) {
     VramLedger v;
-    v.slot_a_bytes = kStreamSlotBytes;  // full layer ~160 MiB, not 80
+    v.slot_a_bytes = kStreamSlotBytes;  // floor; grow after measure
     v.slot_b_bytes = kStreamSlotBytes;
     v.graph_reserve_bytes = kHourGraphReserveBytes;  // BEFORE any extra park
     const uint64_t fixed = v.ga_bytes + v.kv20k_bytes + v.scratch_bytes + v.graph_reserve_bytes +
@@ -58,6 +60,29 @@ inline constexpr VramLedger vram_ledger_slots_first(
     v.n_streamed_ffn = ffn_stream_layers(n_park);
     v.parked_ffn_bytes = static_cast<uint64_t>(n_park) * layer_bytes;
     return v;
+}
+
+// Keep park=57 / stream=7. Only the A/B slot sizes change.
+inline constexpr VramLedger vram_ledger_sized_slots(uint64_t slot_a, uint64_t slot_b) {
+    VramLedger v = vram_ledger_slots_first();
+    v.slot_a_bytes = slot_a > kStreamSlotBytes ? slot_a : kStreamSlotBytes;
+    v.slot_b_bytes = slot_b > kStreamSlotBytes ? slot_b : kStreamSlotBytes;
+    return v;
+}
+
+inline std::string format_ffn_slot_bytes_line(uint32_t layer, uint64_t gate, uint64_t up,
+                                              uint64_t down, uint64_t slot) {
+    char buf[384];
+    const uint64_t sum = gate + up + down;
+    std::snprintf(buf, sizeof(buf),
+                  "FFN_SLOT_BYTES layer=%u gate=%llu up=%llu down=%llu sum=%llu "
+                  "align=%u slot=%llu floor=%llu (down must fit; grow if sum+align>floor)",
+                  layer, static_cast<unsigned long long>(gate),
+                  static_cast<unsigned long long>(up), static_cast<unsigned long long>(down),
+                  static_cast<unsigned long long>(sum), kTensorAlign,
+                  static_cast<unsigned long long>(slot),
+                  static_cast<unsigned long long>(kStreamSlotBytes));
+    return buf;
 }
 
 inline std::string format_vram_ledger(const VramLedger& v) {
