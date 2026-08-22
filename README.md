@@ -35,6 +35,8 @@ Harness and export are on main. Streamer dumps scores. Packer cuts and writes th
 
 First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.md).
 
+Sample hotspot viewer (hook-ring replay, no live attach): [viewer/](viewer/).
+
 ## Build
 
 cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure
