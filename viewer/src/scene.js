@@ -2,7 +2,6 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   FFN_BINS_PER_LAYER,
-  N_GROUPS,
   N_LAYERS,
   N_PACKS,
   N_SPINE,
@@ -11,29 +10,20 @@ import {
   rarityGlow,
   vocabBinIndex,
 } from "./constants.js";
-import { makeGlyphSprite, makeStreakMesh } from "./glyphs.js";
+import { glyphScale, makeGlyphSprite, makeHeadPoint, makeStreakLine, pointSpriteTexture } from "./glyphs.js";
 import { packSpikeBit } from "./ring.js";
 
 const FFN_COUNT = N_LAYERS * FFN_BINS_PER_LAYER;
 const LAYER_H = 0.42;
 const GROUP_GAP = 0.38;
-const FFN_R = 5.1;
 const PACK_R = 2.35;
 const VOCAB_R = 6.2;
-const MAX_FLYERS = 28;
+const MAX_FLYERS = 20;
+const GOLDEN = 0.6180339887498948;
 
 function layerY(layer) {
   const group = Math.floor(layer / 4);
   return layer * LAYER_H + group * GROUP_GAP;
-}
-
-function hex(n) {
-  return new THREE.Color(n);
-}
-
-function ffnXZ(bin) {
-  const t = (bin / FFN_BINS_PER_LAYER) * Math.PI * 2;
-  return { x: Math.sin(t) * FFN_R, z: Math.cos(t) * FFN_R, t };
 }
 
 function packXZ(pack) {
@@ -48,9 +38,34 @@ function vocabXZ(bin) {
   return { x: Math.sin(t) * VOCAB_R, z: Math.cos(t) * VOCAB_R };
 }
 
+// Fired FFN bins live in the layer volume. Not a ring, not a cube grid.
+function ffnVolumePos(layer, bin) {
+  const y = layerY(layer);
+  const theta = ((bin * GOLDEN) % 1) * Math.PI * 2 + layer * 0.11;
+  const u = ((bin * 17 + layer * 31) * GOLDEN) % 1;
+  const r = 1.25 + u * 3.4;
+  const yJ = (((bin * 13 + layer * 7) * GOLDEN) % 1) * 0.22 - 0.11;
+  return { x: Math.sin(theta) * r, y: y + yJ, z: Math.cos(theta) * r };
+}
+
+function ffnStreakDir(layer, bin) {
+  const theta = ((bin * GOLDEN + 0.17) % 1) * Math.PI * 2 + layer * 0.07;
+  return {
+    x: Math.cos(theta) * 0.38,
+    y: 0.08,
+    z: Math.sin(theta) * 0.38,
+  };
+}
+
 function bezier3(a, b, c, t) {
   const u = 1 - t;
   return u * u * a + 2 * u * t * b + t * t * c;
+}
+
+function setRGB(col, i, r, g, b) {
+  col[i * 3] = r;
+  col[i * 3 + 1] = g;
+  col[i * 3 + 2] = b;
 }
 
 function addStarField(scene) {
@@ -76,6 +91,7 @@ function addStarField(scene) {
     geo,
     new THREE.PointsMaterial({
       size: 0.055,
+      map: pointSpriteTexture(),
       vertexColors: true,
       transparent: true,
       opacity: 0.85,
@@ -84,6 +100,47 @@ function addStarField(scene) {
   );
   scene.add(stars);
   return { geo, stars };
+}
+
+function makePointCloud(count, size) {
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const pts = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      size,
+      map: pointSpriteTexture(),
+      vertexColors: true,
+      transparent: true,
+      opacity: 1,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      sizeAttenuation: true,
+    }),
+  );
+  return { geo, pos, col, pts };
+}
+
+function makeStreakCloud(count) {
+  const pos = new Float32Array(count * 2 * 3);
+  const col = new Float32Array(count * 2 * 3);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const lines = new THREE.LineSegments(
+    geo,
+    new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  return { geo, pos, col, lines };
 }
 
 export function createMap(container, { presentBins = null, presentPacks = null } = {}) {
@@ -98,7 +155,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
 
   const towerH = layerY(N_LAYERS - 1);
   const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 200);
-  camera.position.set(9.2, 3.4, 12.6);
+  camera.position.set(7.6, 4.0, 10.4);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, towerH * 0.42, 0);
@@ -106,156 +163,140 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.14;
   controls.maxDistance = 42;
-  controls.minDistance = 6;
+  controls.minDistance = 5.5;
   controls.maxPolarAngle = Math.PI * 0.78;
   controls.minPolarAngle = Math.PI * 0.18;
 
-  scene.add(new THREE.AmbientLight(0x6a7380, 0.16));
-  const key = new THREE.DirectionalLight(0x9aa8b8, 0.12);
-  key.position.set(8, 18, 10);
-  scene.add(key);
+  const streakRes = new THREE.Vector2(1, 1);
 
-  const dummy = new THREE.Object3D();
-  const tmpColor = new THREE.Color();
-  const look = new THREE.Vector3();
-
-  const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.07, 0.07, towerH + 2.2, 12),
-    new THREE.MeshBasicMaterial({
+  const axisPos = new Float32Array([0, -1.6, 0, 0, towerH + 1.2, 0]);
+  const axisGeo = new THREE.BufferGeometry();
+  axisGeo.setAttribute("position", new THREE.BufferAttribute(axisPos, 3));
+  const axis = new THREE.Line(
+    axisGeo,
+    new THREE.LineBasicMaterial({
       color: 0x1a2a30,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.34,
+      depthWrite: false,
     }),
   );
-  shaft.position.y = towerH * 0.5;
-  scene.add(shaft);
+  scene.add(axis);
 
-  const groupRingMat = new THREE.MeshBasicMaterial({
-    color: 0x121820,
-    transparent: true,
-    opacity: 0.22,
-    side: THREE.DoubleSide,
-  });
-  for (let g = 0; g < N_GROUPS; g++) {
-    const y = (layerY(g * 4) + layerY(g * 4 + 3)) / 2;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(FFN_R + 0.12, 0.008, 6, 64), groupRingMat);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = y;
-    scene.add(ring);
-  }
-
-  const packGeo = new THREE.OctahedronGeometry(0.22, 0);
-  const packMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const packs = new THREE.InstancedMesh(packGeo, packMat, N_PACKS);
-  packs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const packs = makePointCloud(N_PACKS, 0.14);
+  const packStreaks = makeStreakCloud(N_PACKS);
   const packFlash = new Float32Array(N_PACKS);
   for (let p = 0; p < N_PACKS; p++) {
     const layer = layerFromPackId(p);
     const xz = packXZ(p);
-    dummy.position.set(xz.x, layerY(layer), xz.z);
-    const shown = !presentPacks || presentPacks[p];
-    dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
-    dummy.rotation.set(0.2, 0.3, 0.08);
-    dummy.updateMatrix();
-    packs.setMatrixAt(p, dummy.matrix);
-    packs.setColorAt(p, hex(0x141820));
+    const y = layerY(layer);
+    packs.pos[p * 3] = xz.x;
+    packs.pos[p * 3 + 1] = y;
+    packs.pos[p * 3 + 2] = xz.z;
+    packStreaks.pos[p * 6] = xz.x;
+    packStreaks.pos[p * 6 + 1] = y;
+    packStreaks.pos[p * 6 + 2] = xz.z;
+    packStreaks.pos[p * 6 + 3] = xz.x * 0.72;
+    packStreaks.pos[p * 6 + 4] = y + 0.12;
+    packStreaks.pos[p * 6 + 5] = xz.z * 0.72;
   }
-  scene.add(packs);
+  packs.geo.attributes.position.needsUpdate = true;
+  packStreaks.geo.attributes.position.needsUpdate = true;
+  scene.add(packs.pts);
+  scene.add(packStreaks.lines);
 
-  const spineGeo = new THREE.IcosahedronGeometry(0.28, 1);
-  const spineMat = new THREE.MeshStandardMaterial({
-    color: 0x0a1818,
-    emissive: 0x1a3a3a,
-    emissiveIntensity: 0.22,
-    roughness: 0.7,
-    metalness: 0.05,
-  });
-  const spine = new THREE.InstancedMesh(spineGeo, spineMat, N_SPINE);
+  const spine = makePointCloud(N_SPINE, 0.16);
   const spineSpark = new Float32Array(N_SPINE);
   const spineHeat = new Float32Array(N_SPINE);
   spineHeat.fill(0.42);
   for (let g = 0; g < N_SPINE; g++) {
-    dummy.position.set(0, layerY(g * 4 + 3), 0);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    spine.setMatrixAt(g, dummy.matrix);
-    spine.setColorAt(g, hex(0x1c3334));
+    spine.pos[g * 3 + 1] = layerY(g * 4 + 3);
+    setRGB(spine.col, g, 0.14, 0.26, 0.28);
   }
-  scene.add(spine);
+  spine.geo.attributes.position.needsUpdate = true;
+  spine.geo.attributes.color.needsUpdate = true;
+  scene.add(spine.pts);
 
-  const ffnGeo = new THREE.BoxGeometry(0.14, 0.24, 0.14);
-  const ffnMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const ffn = new THREE.InstancedMesh(ffnGeo, ffnMat, FFN_COUNT);
+  const ffn = makePointCloud(FFN_COUNT, 0.085);
+  const ffnStreaks = makeStreakCloud(FFN_COUNT);
   const ffnFlash = new Float32Array(FFN_COUNT);
   const ffnHeat = new Float32Array(FFN_COUNT);
   for (let layer = 0; layer < N_LAYERS; layer++) {
-    const y = layerY(layer);
     for (let b = 0; b < FFN_BINS_PER_LAYER; b++) {
       const i = layer * FFN_BINS_PER_LAYER + b;
-      const xz = ffnXZ(b);
-      dummy.position.set(xz.x, y, xz.z);
-      look.set(0, y, 0);
-      dummy.lookAt(look);
-      const shown = !presentBins || presentBins[i];
-      dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
-      dummy.updateMatrix();
-      ffn.setMatrixAt(i, dummy.matrix);
-      ffn.setColorAt(i, hex(0x07090d));
+      const p = ffnVolumePos(layer, b);
+      const d = ffnStreakDir(layer, b);
+      ffn.pos[i * 3] = p.x;
+      ffn.pos[i * 3 + 1] = p.y;
+      ffn.pos[i * 3 + 2] = p.z;
+      ffnStreaks.pos[i * 6] = p.x - d.x;
+      ffnStreaks.pos[i * 6 + 1] = p.y - d.y;
+      ffnStreaks.pos[i * 6 + 2] = p.z - d.z;
+      ffnStreaks.pos[i * 6 + 3] = p.x + d.x;
+      ffnStreaks.pos[i * 6 + 4] = p.y + d.y;
+      ffnStreaks.pos[i * 6 + 5] = p.z + d.z;
     }
   }
-  scene.add(ffn);
+  ffn.geo.attributes.position.needsUpdate = true;
+  ffnStreaks.geo.attributes.position.needsUpdate = true;
+  scene.add(ffn.pts);
+  scene.add(ffnStreaks.lines);
 
-  const vocabGeo = new THREE.BoxGeometry(0.1, 0.16, 0.1);
-  const vocabMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-  const vocab = new THREE.InstancedMesh(vocabGeo, vocabMat, VOCAB_BINS);
+  const vocab = makePointCloud(VOCAB_BINS, 0.1);
   const vocabFlash = new Float32Array(VOCAB_BINS);
   const vocabRare = new Float32Array(VOCAB_BINS);
   for (let b = 0; b < VOCAB_BINS; b++) {
     const xz = vocabXZ(b);
-    dummy.position.set(xz.x, -1.45, xz.z);
-    look.set(0, -1.45, 0);
-    dummy.lookAt(look);
-    dummy.scale.set(1, 1, 1);
-    dummy.updateMatrix();
-    vocab.setMatrixAt(b, dummy.matrix);
-    vocab.setColorAt(b, hex(0x0c0d10));
+    vocab.pos[b * 3] = xz.x;
+    vocab.pos[b * 3 + 1] = -1.45;
+    vocab.pos[b * 3 + 2] = xz.z;
   }
-  scene.add(vocab);
+  vocab.geo.attributes.position.needsUpdate = true;
+  scene.add(vocab.pts);
 
   const flyers = [];
 
+  function disposeFlyer(fl) {
+    scene.remove(fl.sprite);
+    scene.remove(fl.streak);
+    scene.remove(fl.head);
+    fl.sprite.material.dispose();
+    fl.streak.geometry.dispose();
+    fl.streak.material.dispose();
+    fl.head.geometry.dispose();
+    fl.head.material.dispose();
+  }
+
   function spawnToken(word, id) {
     const sprite = makeGlyphSprite(word, id);
-    const streak = makeStreakMesh();
+    const streak = makeStreakLine(streakRes);
+    const head = makeHeadPoint();
     const bin = vocabBinIndex(id);
     const start = vocabXZ(bin);
-    const drift = ((id % 11) - 5) * 0.12;
+    const drift = ((id % 11) - 5) * 0.18;
     sprite.position.set(start.x, -1.15, start.z);
-    streak.position.copy(sprite.position);
+    head.position.copy(sprite.position);
     scene.add(sprite);
     scene.add(streak);
+    scene.add(head);
     flyers.push({
       sprite,
       streak,
+      head,
       age: 0,
-      life: 0.72 + rarityGlow(id) * 0.18,
+      life: 1.12 + rarityGlow(id) * 0.28,
       sx: start.x,
       sy: -1.15,
       sz: start.z,
-      mx: start.x * 0.22 + drift,
-      my: towerH * 0.38,
-      mz: start.z * 0.22 - drift * 0.3,
-      ex: drift * 0.25,
-      ey: towerH + 0.8,
-      ez: -drift * 0.2,
+      mx: start.x * 0.48 + drift,
+      my: towerH * (0.3 + (id % 9) * 0.035),
+      mz: start.z * 0.48 - drift * 0.35,
+      ex: drift * 0.3,
+      ey: towerH + 0.9,
+      ez: -drift * 0.22,
     });
     while (flyers.length > MAX_FLYERS) {
-      const old = flyers.shift();
-      scene.remove(old.sprite);
-      scene.remove(old.streak);
-      old.sprite.material.dispose();
-      old.streak.geometry.dispose();
-      old.streak.material.dispose();
+      disposeFlyer(flyers.shift());
     }
   }
 
@@ -263,7 +304,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     for (let i = 0; i < FFN_COUNT; i++) {
       if (bins[i] && (!presentBins || presentBins[i])) {
         ffnFlash[i] = 1;
-        ffnHeat[i] = 0.28;
+        ffnHeat[i] = 0.2;
       }
     }
     for (let p = 0; p < N_PACKS; p++) {
@@ -289,105 +330,96 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     }
   }
 
-  function paintInstances(dt) {
+  function paintClouds(dt) {
     for (let p = 0; p < N_PACKS; p++) {
-      packFlash[p] *= 0.88;
+      packFlash[p] *= 0.8;
       const pulse = packFlash[p];
-      if (pulse < 0.04) {
-        tmpColor.setRGB(0.08, 0.1, 0.13);
+      const shown = !(presentPacks && !presentPacks[p]) && pulse >= 0.04;
+      if (!shown) {
+        setRGB(packs.col, p, 0, 0, 0);
+        setRGB(packStreaks.col, p * 2, 0, 0, 0);
+        setRGB(packStreaks.col, p * 2 + 1, 0, 0, 0);
       } else {
-        tmpColor.setRGB(0.32 + pulse * 0.18, 0.26 + pulse * 0.08, 0.16);
+        const r = 0.42 + pulse * 0.28;
+        const g = 0.34 + pulse * 0.12;
+        const b = 0.2;
+        setRGB(packs.col, p, r, g, b);
+        setRGB(packStreaks.col, p * 2, r, g, b);
+        setRGB(packStreaks.col, p * 2 + 1, r * 0.25, g * 0.25, b * 0.25);
       }
-      packs.setColorAt(p, tmpColor);
-      const layer = layerFromPackId(p);
-      const xz = packXZ(p);
-      dummy.position.set(xz.x, layerY(layer), xz.z);
-      if (presentPacks && !presentPacks[p]) {
-        dummy.scale.set(0, 0, 0);
-      } else {
-        const s = 1 + pulse * 0.1;
-        dummy.scale.set(s, s, s);
-      }
-      dummy.rotation.set(0.2, 0.3 + pulse * 0.25, 0.08);
-      dummy.updateMatrix();
-      packs.setMatrixAt(p, dummy.matrix);
     }
-    packs.instanceColor.needsUpdate = true;
-    packs.instanceMatrix.needsUpdate = true;
+    packs.geo.attributes.color.needsUpdate = true;
+    packStreaks.geo.attributes.color.needsUpdate = true;
 
-    let maxSpark = 0;
     for (let g = 0; g < N_SPINE; g++) {
       spineSpark[g] *= 0.9;
-      if (spineSpark[g] > maxSpark) maxSpark = spineSpark[g];
       const heat = Math.max(0.38, spineHeat[g]);
       const spark = spineSpark[g];
-      tmpColor.setRGB(
-        0.1 + spark * 0.12 + heat * 0.04,
-        0.2 + spark * 0.16 + heat * 0.08,
-        0.22 + spark * 0.14 + heat * 0.08,
+      setRGB(
+        spine.col,
+        g,
+        0.12 + spark * 0.22 + heat * 0.08,
+        0.24 + spark * 0.28 + heat * 0.14,
+        0.26 + spark * 0.24 + heat * 0.14,
       );
-      spine.setColorAt(g, tmpColor);
-      dummy.position.set(0, layerY(g * 4 + 3), 0);
-      dummy.scale.set(1 + spark * 0.06, 1 + spark * 0.06, 1 + spark * 0.06);
-      dummy.updateMatrix();
-      spine.setMatrixAt(g, dummy.matrix);
     }
-    spine.instanceColor.needsUpdate = true;
-    spine.instanceMatrix.needsUpdate = true;
-    spineMat.emissiveIntensity = 0.18 + maxSpark * 0.12;
+    spine.geo.attributes.color.needsUpdate = true;
 
     for (let i = 0; i < FFN_COUNT; i++) {
-      ffnFlash[i] *= 0.82;
-      ffnHeat[i] *= 0.9;
+      ffnFlash[i] *= 0.78;
+      ffnHeat[i] *= 0.84;
       const f = ffnFlash[i];
       const h = ffnHeat[i];
-      if (f < 0.03 && h < 0.05) {
-        tmpColor.setRGB(0.025, 0.03, 0.04);
+      if (f < 0.03 && h < 0.04) {
+        setRGB(ffn.col, i, 0, 0, 0);
+        setRGB(ffnStreaks.col, i * 2, 0, 0, 0);
+        setRGB(ffnStreaks.col, i * 2 + 1, 0, 0, 0);
       } else {
-        tmpColor.setRGB(0.12 + f * 0.22 + h * 0.08, 0.16 + f * 0.2, 0.2 + f * 0.22 + h * 0.06);
+        const r = 0.16 + f * 0.38 + h * 0.08;
+        const g = 0.22 + f * 0.32 + h * 0.06;
+        const b = 0.3 + f * 0.42 + h * 0.08;
+        setRGB(ffn.col, i, r, g, b);
+        setRGB(ffnStreaks.col, i * 2, r, g, b);
+        setRGB(ffnStreaks.col, i * 2 + 1, r * 0.2, g * 0.2, b * 0.2);
       }
-      ffn.setColorAt(i, tmpColor);
     }
-    ffn.instanceColor.needsUpdate = true;
+    ffn.geo.attributes.color.needsUpdate = true;
+    ffnStreaks.geo.attributes.color.needsUpdate = true;
 
     for (let b = 0; b < VOCAB_BINS; b++) {
-      vocabFlash[b] *= 0.82;
+      vocabFlash[b] *= 0.8;
       const f = vocabFlash[b] * (vocabRare[b] || 1);
-      if (f < 0.02) {
-        tmpColor.setRGB(0.045, 0.048, 0.055);
+      if (f < 0.03) {
+        setRGB(vocab.col, b, 0, 0, 0);
       } else {
-        tmpColor.setRGB(0.22 + f * 0.18, 0.22 + f * 0.16, 0.18 + f * 0.1);
+        setRGB(vocab.col, b, 0.28 + f * 0.22, 0.28 + f * 0.18, 0.22 + f * 0.12);
       }
-      vocab.setColorAt(b, tmpColor);
     }
-    vocab.instanceColor.needsUpdate = true;
+    vocab.geo.attributes.color.needsUpdate = true;
 
     for (let i = flyers.length - 1; i >= 0; i--) {
       const fl = flyers[i];
       fl.age += dt;
       const t = Math.min(1, fl.age / fl.life);
-      const ease = t;
-      const x = bezier3(fl.sx, fl.mx, fl.ex, ease);
-      const y = bezier3(fl.sy, fl.my, fl.ey, ease);
-      const z = bezier3(fl.sz, fl.mz, fl.ez, ease);
-      const nx = bezier3(fl.sx, fl.mx, fl.ex, Math.min(1, ease + 0.04));
-      const ny = bezier3(fl.sy, fl.my, fl.ey, Math.min(1, ease + 0.04));
-      const nz = bezier3(fl.sz, fl.mz, fl.ez, Math.min(1, ease + 0.04));
+      const x = bezier3(fl.sx, fl.mx, fl.ex, t);
+      const y = bezier3(fl.sy, fl.my, fl.ey, t);
+      const z = bezier3(fl.sz, fl.mz, fl.ez, t);
+      const back = Math.max(0, t - 0.09);
+      const bx = bezier3(fl.sx, fl.mx, fl.ex, back);
+      const by = bezier3(fl.sy, fl.my, fl.ey, back);
+      const bz = bezier3(fl.sz, fl.mz, fl.ez, back);
       fl.sprite.position.set(x, y, z);
-      fl.streak.position.set(x, y, z);
-      fl.streak.lookAt(nx, ny, nz);
+      fl.head.position.set(x, y, z);
+      fl.streak.geometry.setPositions([bx, by, bz, x, y, z]);
       const fade = t < 0.08 ? t / 0.08 : 1 - (t - 0.08) / 0.92;
-      const a = Math.max(0, fade) * (0.28 + fl.sprite.userData.rare * 0.22);
+      const a = Math.max(0, fade) * (0.62 + fl.sprite.userData.rare * 0.26);
       fl.sprite.material.opacity = a;
-      fl.streak.material.opacity = a * 0.7;
-      const w = Math.max(0.42, Math.min(1.15, fl.sprite.userData.text.length * 0.13));
-      fl.sprite.scale.set(w, 0.28, 1);
+      fl.streak.material.opacity = Math.min(1, a * 1.15);
+      fl.head.material.opacity = Math.min(1, a * 1.05);
+      const s = glyphScale(fl.sprite.userData.text);
+      fl.sprite.scale.set(s.x, s.y, 1);
       if (t >= 1) {
-        scene.remove(fl.sprite);
-        scene.remove(fl.streak);
-        fl.sprite.material.dispose();
-        fl.streak.geometry.dispose();
-        fl.streak.material.dispose();
+        disposeFlyer(fl);
         flyers.splice(i, 1);
       }
     }
@@ -399,6 +431,10 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     camera.aspect = w / Math.max(1, h);
     camera.updateProjectionMatrix();
     renderer.setSize(w, h, false);
+    streakRes.set(Math.max(1, w), Math.max(1, h));
+    for (const fl of flyers) {
+      fl.streak.material.resolution.copy(streakRes);
+    }
   }
 
   window.addEventListener("resize", resize);
@@ -409,7 +445,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   function tick(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    paintInstances(dt);
+    paintClouds(dt);
     controls.update();
     renderer.render(scene, camera);
     raf = requestAnimationFrame(tick);
@@ -423,24 +459,24 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
       controls.dispose();
-      for (const fl of flyers) {
-        scene.remove(fl.sprite);
-        scene.remove(fl.streak);
-        fl.sprite.material.dispose();
-        fl.streak.geometry.dispose();
-        fl.streak.material.dispose();
-      }
+      for (const fl of flyers) disposeFlyer(fl);
       flyers.length = 0;
       renderer.dispose();
-      packGeo.dispose();
-      spineGeo.dispose();
-      ffnGeo.dispose();
-      vocabGeo.dispose();
       stars.geo.dispose();
-      packMat.dispose();
-      spineMat.dispose();
-      ffnMat.dispose();
-      vocabMat.dispose();
+      axisGeo.dispose();
+      packs.geo.dispose();
+      packStreaks.geo.dispose();
+      spine.geo.dispose();
+      ffn.geo.dispose();
+      ffnStreaks.geo.dispose();
+      vocab.geo.dispose();
+      packs.pts.material.dispose();
+      packStreaks.lines.material.dispose();
+      spine.pts.material.dispose();
+      ffn.pts.material.dispose();
+      ffnStreaks.lines.material.dispose();
+      vocab.pts.material.dispose();
+      axis.material.dispose();
       if (renderer.domElement.parentNode) {
         renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
