@@ -121,31 +121,6 @@ inline TensorDataKind classify_tensor_data_ptr(const void* data, const void* buf
     return TensorDataKind::StaleHost;
 }
 
-// Re-resolve CUDA weight data to buffer base + view_offs (or the offset
-// stored in data). Does not D2H. changed=true when the pointer moved.
-inline void* repoint_cuda_data(void* base, size_t buf_size, void* data, size_t view_offs,
-                               size_t nbytes, bool* changed) {
-    if (changed) {
-        *changed = false;
-    }
-    if (!base || nbytes == 0 || buf_size < nbytes) {
-        return data;
-    }
-    const TensorDataKind kind = classify_tensor_data_ptr(data, base, buf_size);
-    if (kind == TensorDataKind::InBuffer) {
-        return data;
-    }
-    bool ok = false;
-    const float* p = resolve_f32_in_buffer(base, buf_size, data, view_offs, nbytes, &ok);
-    if (!ok || !p) {
-        return data;
-    }
-    if (changed) {
-        *changed = static_cast<const void*>(p) != data;
-    }
-    return const_cast<float*>(p);
-}
-
 inline bool tensor_data_is_av_risk(TensorDataKind k) {
     return k == TensorDataKind::IntegerOffset || k == TensorDataKind::StaleHost ||
            k == TensorDataKind::None;

@@ -400,23 +400,16 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, tensor_data_is_av_risk(TensorDataKind::IntegerOffset));
     CHECK(ctx, tensor_data_is_av_risk(TensorDataKind::StaleHost));
     CHECK(ctx, !tensor_data_is_av_risk(TensorDataKind::InBuffer));
-    bool moved = false;
-    void* rp = repoint_cuda_data(big.data(), big.size(),
-                                 reinterpret_cast<void*>(static_cast<uintptr_t>(off_1m5)), 0, 32,
-                                 &moved);
-    CHECK(ctx, moved);
-    CHECK(ctx, rp == big.data() + off_1m5);
-    moved = false;
-    rp = repoint_cuda_data(big.data(), big.size(), big.data() + off_1m5, 0, 32, &moved);
-    CHECK(ctx, !moved);
-    CHECK(ctx, rp == big.data() + off_1m5);
     const std::string av =
-        format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0", "none", "-",
-                                 "integer_offset", 1);
+        format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
+                                 "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);
     CHECK(ctx, av.find("FFN_AV_SPLIT layer=63") == 0);
     CHECK(ctx, av.find("tensor=blk.63.ffn_down.weight") != std::string::npos);
-    CHECK(ctx, av.find("buft=CUDA0") != std::string::npos);
-    CHECK(ctx, av.find("data=integer_offset") != std::string::npos);
+    CHECK(ctx, av.find("view_src=blk.63.ffn_down.weight") != std::string::npos);
+    CHECK(ctx, av.find("view_buft=CPU_Mapped") != std::string::npos);
+    CHECK(ctx, av.find("data=stale_host") != std::string::npos);
+    CHECK(ctx, format_split_why_line(642, "blk.63.ffn_down.weight", "CPU_Mapped")
+                   .find("SPLIT_WHY n=642") == 0);
 
     ok = false;
     p = resolve_f32_in_buffer(buf.data(), buf.size(), nullptr, 16, 8, &ok);
