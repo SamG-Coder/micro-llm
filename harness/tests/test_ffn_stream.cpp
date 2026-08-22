@@ -487,6 +487,9 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, nxt.find("TAIL_NEXT n=643") == 0);
     CHECK(ctx, nxt.find("name=logits") != std::string::npos);
     CHECK(ctx, format_lm_head_proof_line(1, 1, 1).find("all_host_va=1") != std::string::npos);
+    const std::string avsrc =
+        format_av_src_line("result_output", "MUL_MAT", "CUDA0", "integer_offset");
+    CHECK(ctx, avsrc == "AV_SRC name=result_output op=MUL_MAT buft=CUDA0 data=integer_offset");
     const std::string av =
         format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
                                  "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);

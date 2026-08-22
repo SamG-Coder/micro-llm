@@ -12,6 +12,12 @@
 #include "llama.h"
 #include "ggml.h"
 #include "ggml-backend.h"
+#if defined(__has_include)
+#if __has_include("llama-ext.h")
+#include "llama-ext.h"
+#define MICRO_LLM_HAS_GRAPH_RESERVE 1
+#endif
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -270,6 +276,7 @@ struct HostLmHeadGuard {
     ggml_backend_buffer_t weight = nullptr;
     ggml_backend_buffer_t norm = nullptr;
     ggml_backend_buffer_t hidden = nullptr;
+    ggml_backend_buffer_t tail = nullptr;
     ~HostLmHeadGuard() {
         if (weight) {
             ggml_backend_buffer_free(weight);
@@ -279,6 +286,9 @@ struct HostLmHeadGuard {
         }
         if (hidden) {
             ggml_backend_buffer_free(hidden);
+        }
+        if (tail) {
+            ggml_backend_buffer_free(tail);
         }
     }
 };
@@ -372,6 +382,70 @@ int tensor_is_real_host_va(const ggml_tensor* t) {
                    !ptr_looks_like_integer_offset(t->data)
                ? 1
                : 0;
+}
+
+bool name_is_fixed_lm_head_src(const ggml_tensor* t) {
+    if (!t || !t->name[0]) {
+        return false;
+    }
+    return std::strstr(t->name, "output.weight") != nullptr ||
+           std::strstr(t->name, "output_norm") != nullptr;
+}
+
+bool tensor_is_leftover_av_src(const ggml_tensor* t) {
+    if (!t || name_is_fixed_lm_head_src(t) || tensor_is_real_host_va(t)) {
+        return false;
+    }
+    return tensor_data_is_av_risk(tensor_data_kind_of(t));
+}
+
+bool resolve_tensor_va(ggml_tensor* t) {
+    if (!t || !t->buffer) {
+        return false;
+    }
+    void* base = ggml_backend_buffer_get_base(t->buffer);
+    const size_t cap = ggml_backend_buffer_get_size(t->buffer);
+    if (!base || cap == 0) {
+        return false;
+    }
+    if (classify_tensor_data_ptr(t->data, base, cap) == TensorDataKind::InBuffer) {
+        return true;
+    }
+    size_t off = t->view_offs;
+    if (ptr_looks_like_integer_offset(t->data, cap)) {
+        off = reinterpret_cast<uintptr_t>(t->data);
+    }
+    size_t n = ggml_nbytes(t);
+    if (n == 0) {
+        n = 1;
+    }
+    if (!ggml_slot_pack_ok(off, n, cap)) {
+        return false;
+    }
+    t->data = device_va_from_buffer(base, off);
+    return classify_tensor_data_ptr(t->data, base, cap) == TensorDataKind::InBuffer;
+}
+
+bool attach_leftover_host(HostLmHeadGuard* guard, ggml_backend_buffer_type_t cpu_buft,
+                          ggml_tensor* t) {
+    if (!guard || !cpu_buft || !t) {
+        return false;
+    }
+    const size_t n = ggml_nbytes(t);
+    if (n == 0) {
+        return false;
+    }
+    if (guard->tail) {
+        ggml_backend_buffer_free(guard->tail);
+        guard->tail = nullptr;
+    }
+    std::vector<uint8_t> host(n, 0);
+    if (t->buffer && ggml_backend_buffer_is_host(t->buffer) && t->data &&
+        !ptr_looks_like_integer_offset(t->data)) {
+        std::memcpy(host.data(), t->data, n);
+    }
+    guard->tail = ggml_backend_buft_alloc_buffer(cpu_buft, n);
+    return guard->tail && attach_to_real_host(guard->tail, t, host.data(), n);
 }
 
 bool host_bind_named_weight(const llama_model* model, const char* name,
@@ -822,6 +896,97 @@ void print_tail_next(const char* when, const void* logits) {
                      .c_str());
     std::fprintf(stderr, "TAIL_NEXT_WHEN %s logits=%d (node after #642)\n", when ? when : "-",
                  logits ? 1 : 0);
+}
+
+ggml_tensor* leftover_av_src_from_graph(ggml_cgraph* gf) {
+    if (!gf) {
+        return nullptr;
+    }
+    const int n = ggml_graph_n_nodes(gf);
+    if (n <= 0) {
+        return nullptr;
+    }
+    ggml_tensor* last = ggml_graph_node(gf, n - 1);
+    if (last && tensor_is_leftover_av_src(last)) {
+        return last;
+    }
+    if (last) {
+        for (int i = 0; i < GGML_MAX_SRC; ++i) {
+            ggml_tensor* s = last->src[i];
+            if (tensor_is_leftover_av_src(s)) {
+                return s;
+            }
+        }
+    }
+    const int begin = n > 8 ? n - 8 : 0;
+    for (int i = n - 1; i >= begin; --i) {
+        ggml_tensor* node = ggml_graph_node(gf, i);
+        if (!node) {
+            continue;
+        }
+        for (int s = 0; s < GGML_MAX_SRC; ++s) {
+            ggml_tensor* src = node->src[s];
+            if (tensor_is_leftover_av_src(src)) {
+                return src;
+            }
+        }
+        if (tensor_is_leftover_av_src(node)) {
+            return node;
+        }
+    }
+    return last;
+}
+
+ggml_tensor* leftover_av_src_from_model(const llama_model* model) {
+    if (!model) {
+        return nullptr;
+    }
+    static const char* kNames[] = {"result_output", "output.scale", "output.weight.scale",
+                                   "output.input_scale", "out_ids", "inp_out_ids"};
+    for (const char* name : kNames) {
+        ggml_tensor* t = llama_model_get_tensor(model, name);
+        if (tensor_is_leftover_av_src(t)) {
+            return t;
+        }
+    }
+    return llama_model_get_tensor(model, "result_output");
+}
+
+void print_and_fix_av_src(llama_context* ctx, const llama_model* model,
+                          ggml_backend_buffer_type_t cpu_buft, HostLmHeadGuard* guard,
+                          uint32_t n_ubatch) {
+    ggml_tensor* src = nullptr;
+#if defined(MICRO_LLM_HAS_GRAPH_RESERVE)
+    if (ctx) {
+        const uint32_t n = n_ubatch ? n_ubatch : 32u;
+        ggml_cgraph* gf = llama_graph_reserve(ctx, n, 1, n);
+        src = leftover_av_src_from_graph(gf);
+    }
+#else
+    (void)ctx;
+    (void)n_ubatch;
+#endif
+    if (!src) {
+        src = leftover_av_src_from_model(model);
+    }
+    const char* name = src && src->name[0] ? src->name : "result_output";
+    const char* op = src ? ggml_op_name(src->op) : "MUL_MAT";
+    const char* buft = src ? buft_name_of(src) : "CUDA0";
+    const char* data = src ? tensor_data_kind_name(tensor_data_kind_of(src)) : "integer_offset";
+    std::fprintf(stderr, "%s\n", format_av_src_line(name, op, buft, data).c_str());
+    std::fflush(stderr);
+    if (!src) {
+        return;
+    }
+    const bool cuda = classify_backend_buft_name(buft_name_of(src)) == BuftKind::Cuda;
+    const bool host_write = src->type == GGML_TYPE_I32 || src->op == GGML_OP_MUL_MAT ||
+                            src->op == GGML_OP_GET_ROWS || src->op == GGML_OP_CPY;
+    if (cuda && host_write && cpu_buft && guard) {
+        if (attach_leftover_host(guard, cpu_buft, src)) {
+            return;
+        }
+    }
+    (void)resolve_tensor_va(src);
 }
 
 void print_layer_mul_mat_srcs(const llama_model* model, uint32_t layer, uint32_t* cpu_n,
@@ -1324,6 +1489,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
 
     const int32_t chunk = 512;
     int32_t consumed = 0;
+    bool av_src_printed = false;
     const auto prefill_t0 = std::chrono::steady_clock::now();
     while (consumed < n_tok) {
         const int32_t n = std::min(chunk, n_tok - consumed);
@@ -1334,6 +1500,10 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         clocks.begin_decode();
         if (!ggml_slots_live) {
             streamer.h2d_overflow_q4();
+        }
+        if (!av_src_printed) {
+            print_and_fix_av_src(ctx, model, cpu_buft, &lm_head, cfg.n_ubatch);
+            av_src_printed = true;
         }
         clocks.begin_span(PerfSpan::Gpu);
         const int rc = llama_decode(ctx, batch);

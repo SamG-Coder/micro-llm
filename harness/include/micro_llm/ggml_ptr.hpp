@@ -251,6 +251,17 @@ inline std::string format_lm_head_proof_line(int src0_host_va, int src1_host_va,
     return buf;
 }
 
+// 4402fcb: MUL_MAT srcs were host VAs. Leftover AVs after reserve (642
+// splits). One hour.err line, immediately before first decode.
+inline std::string format_av_src_line(const char* name, const char* op, const char* buft,
+                                      const char* data_kind) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "AV_SRC name=%s op=%s buft=%s data=%s",
+                  name && name[0] ? name : "-", op && op[0] ? op : "-",
+                  buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-");
+    return buf;
+}
+
 // One A/B slot = one streamed layer’s gate+up+down. 254e10c: down
 // offset past 160. If 160 < aligned sum, the slot MUST grow. Extra
 // align slack so down is not flush against the cap.
