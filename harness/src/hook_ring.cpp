@@ -142,37 +142,67 @@ bool decode_htr1_record(const uint8_t* rec, Htr1TokenMeta* meta, uint8_t* ffn_fi
     return true;
 }
 
-HookRing::HookRing() : buf_(static_cast<size_t>(kHtr1RingDepth) * kHtr1RecordBytes, 0) {}
+HookRing::HookRing() : buf_(static_cast<size_t>(kHtr1RingDepth) * kHtr1RecordBytes, 0) {
+    for (uint32_t i = 0; i < kHtr1RingDepth; ++i) {
+        slot_seq_[i].store(0, std::memory_order_relaxed);
+    }
+}
 
 uint32_t HookRing::push(const uint8_t* rec) {
     if (!rec) {
-        return next_;
+        return next_slot();
     }
-    const uint32_t slot = next_;
-    std::memcpy(buf_.data() + static_cast<size_t>(slot) * kHtr1RecordBytes, rec, kHtr1RecordBytes);
-    next_ = (next_ + 1u) % kHtr1RingDepth;
-    if (count_ < kHtr1RingDepth) {
-        ++count_;
-    }
-    return slot;
+    const uint32_t s = seq_.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t i = s % kHtr1RingDepth;
+    slot_seq_[i].store(0, std::memory_order_relaxed);
+    std::memcpy(buf_.data() + static_cast<size_t>(i) * kHtr1RecordBytes, rec, kHtr1RecordBytes);
+    slot_seq_[i].store(s + 1u, std::memory_order_release);
+    return i;
+}
+
+uint32_t HookRing::count() const {
+    const uint32_t s = seq_.load(std::memory_order_acquire);
+    return s < kHtr1RingDepth ? s : kHtr1RingDepth;
+}
+
+uint32_t HookRing::next_slot() const {
+    return seq_.load(std::memory_order_acquire) % kHtr1RingDepth;
 }
 
 const uint8_t* HookRing::slot(uint32_t i) const {
-    if (i >= kHtr1RingDepth || i >= count_) {
+    if (i >= kHtr1RingDepth || i >= count()) {
         return nullptr;
     }
     return buf_.data() + static_cast<size_t>(i) * kHtr1RecordBytes;
 }
 
 const uint8_t* HookRing::latest() const {
-    if (count_ == 0) {
+    if (count() == 0) {
         return nullptr;
     }
     return slot(latest_slot());
 }
 
 uint32_t HookRing::latest_slot() const {
-    return count_ == 0 ? 0u : (next_ + kHtr1RingDepth - 1u) % kHtr1RingDepth;
+    const uint32_t s = seq_.load(std::memory_order_acquire);
+    return s == 0 ? 0u : (s - 1u) % kHtr1RingDepth;
+}
+
+bool HookRing::copy_latest(uint8_t* out) const {
+    if (!out) {
+        return false;
+    }
+    const uint32_t s = seq_.load(std::memory_order_acquire);
+    if (s == 0) {
+        return false;
+    }
+    const uint32_t i = (s - 1u) % kHtr1RingDepth;
+    const uint32_t want = s;
+    if (slot_seq_[i].load(std::memory_order_acquire) != want) {
+        return false;
+    }
+    std::memcpy(out, buf_.data() + static_cast<size_t>(i) * kHtr1RecordBytes, kHtr1RecordBytes);
+    return slot_seq_[i].load(std::memory_order_acquire) == want;
 }
 
 }  // namespace micro_llm

@@ -4,6 +4,8 @@
 // Windows: WebView2. --ui alone is the sample ring (no GGUF).
 // --model opens the live hour window and posts one HTR1 record per token.
 
+#include "micro_llm/hook_ring.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -27,10 +29,17 @@ std::string hotspot_ui_dir(std::string* err = nullptr);
 // Open the sample map, or the live hour window when opt.live.
 int run_hotspot_ui(const HotspotUiOptions& opt = {});
 
+// Lock-free ring the decode thread writes. UI reads at 60Hz.
+// Token path must only call HookRing::push — no WebView / JSON / file.
+HookRing& hotspot_live_ring();
+
 // Thread-safe. Queue one HTR1 record for the page (Windows WebView2).
+// Prefer hotspot_live_ring().push from the decode thread; this helper
+// exists for tests. The window pumps the ring at 60Hz.
 void hotspot_live_push_htr1(const uint8_t* rec, size_t nbytes);
 
 // Thread-safe. JSON object posted as a WebView2 host message.
+// Attach / stats only — never from the token loop.
 void hotspot_live_push_json(const std::string& json_utf8);
 
 // Set when the live window is closing so the worker can leave llama_decode.

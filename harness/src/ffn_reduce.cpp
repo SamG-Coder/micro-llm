@@ -69,6 +69,22 @@ int CudaReduceContext::reduce_host(const float*, const float*, float*, uint8_t*,
     return -1;
 }
 
+bool CudaReduceContext::ensure_accums() { return false; }
+
+void CudaReduceContext::begin_token_device() {}
+
+int CudaReduceContext::accum_device(uint32_t, const float*, const float*, uint32_t, float) {
+    return -1;
+}
+
+bool CudaReduceContext::async_d2h_bitset(uint8_t*) { return false; }
+
+bool CudaReduceContext::sync_d2h() { return false; }
+
+bool CudaReduceContext::d2h_layer_accums(uint32_t, uint64_t*, float*, float*, uint32_t) {
+    return false;
+}
+
 CudaReduceContext& persistent_cuda_reduce() {
     static CudaReduceContext ctx;
     return ctx;

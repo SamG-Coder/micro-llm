@@ -8,6 +8,7 @@
 //
 // StubLiveForwardBackend is tests-only (no 17GB GGUF in CI).
 
+#include "micro_llm/perf.hpp"
 #include "micro_llm/streamer.hpp"
 #include "micro_llm/trace_hooks.hpp"
 
@@ -30,13 +31,18 @@ struct LiveForwardConfig {
     uint32_t n_ubatch = 32;
     uint32_t checkpoint_every = 2000;
     bool load_vision = false;  // job is text coding assistant
-    bool load_mtp = false;
+    bool load_mtp = false;     // MTP extra GGUF block stays off
     bool continue_after_eos = true;
-    bool disable_flash_attn = true;
-    bool disable_op_offload = true;
-    // Hybrid pin: 99 = CUDA by default. Not ngl=16 (wrong 16 layers).
-    int32_t n_gpu_layers = 99;
+    bool disable_flash_attn = true;  // FA + CPU FFN split AVed; keep FA off
+    // op_offload is how streamed (CPU-resident) FFN weights still run on
+    // ggml CUDA after H2D. Not the park mechanism (that's tensor overrides).
+    bool disable_op_offload = false;
+    bool pack_checkpoint = false;  // scores only; never pack the ~18MB MLPT
+    // ngl is not the pin. 0 = CPU default. Not 16, not 99.
+    int32_t n_gpu_layers = 0;
+    uint32_t n_parked_ffn = 0;  // 0 = use ffn_park_layers_that_fit()
     std::function<void(const uint8_t* rec, size_t nbytes)> on_htr1;
+    std::function<void(const PerfSnapshot&)> on_stats;
     std::atomic<bool>* abort = nullptr;
 };
 
@@ -48,6 +54,7 @@ struct LiveForwardStatus {
     std::string backend;
     std::string message;
     uint64_t n_tokens = 0;
+    PerfSnapshot perf;
 };
 
 class LiveForwardBackend {

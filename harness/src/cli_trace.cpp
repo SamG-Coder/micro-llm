@@ -59,7 +59,19 @@ int run_hour(micro_llm::LiveForwardConfig cfg, bool use_stub, bool push_ui) {
             ",\"ctx\":" + std::to_string(cfg.n_ctx) +
             ",\"nPredict\":" + std::to_string(cfg.n_predict) + "}";
         hotspot_live_push_json(attach);
-        cfg.on_htr1 = [](const uint8_t* rec, size_t n) { hotspot_live_push_htr1(rec, n); };
+        // Token path: lock-free ring only. UI thread reads at 60Hz.
+        cfg.on_htr1 = [](const uint8_t* rec, size_t n) {
+            if (rec && n >= kHtr1RecordBytes) {
+                hotspot_live_ring().push(rec);
+            }
+        };
+        cfg.on_stats = [](const PerfSnapshot& snap) {
+            const std::string js =
+                std::string("{\"type\":\"perf\",\"tokPerSec\":") +
+                std::to_string(snap.tok_per_sec) + ",\"tokens\":" +
+                std::to_string(snap.n_tokens) + "}";
+            hotspot_live_push_json(js);
+        };
     }
 
     StreamerConfig scfg;

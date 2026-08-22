@@ -3,7 +3,9 @@
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/graph_hooks.hpp"
 #include "micro_llm/hook_ring.hpp"
+#include "micro_llm/trace_cli.hpp"
 
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -57,12 +59,27 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::vector<float> hin(kHiddenDim, 0.1f);
     std::vector<float> hout(kHiddenDim, 0.1f);
 
+    const uint32_t n_park =
+        cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ffn_park_layers_that_fit();
+    streamer.set_n_parked_ffn(n_park);
+    PerfClocks clocks;
+    clocks.begin_session();
+    clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
+    streamer.set_perf(&clocks);
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) *
+                                                       kQ4FfnLayerBytes)
+                     .c_str());
+
     streamer.begin_session();
+    clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
     for (uint32_t t = 0; t < n; ++t) {
         hooks.begin_token(t);
+        clocks.begin_span(PerfSpan::Gpu);
         for (uint32_t layer = 0; layer < kNLayers; ++layer) {
-            if (layer + 1 < kNLayers) {
-                streamer.prefetch_ffn(layer + 1);
+            const uint32_t next = streamer.next_streamed_layer(layer);
+            if (next != ~0u && next != layer) {
+                streamer.prefetch_ffn(next);
             }
             streamer.bind_ffn(layer);
             std::fill(gate.begin(), gate.end(), 0.f);
@@ -70,7 +87,9 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
             const uint32_t ch = (layer * 17u + t) % kFfnIntermediate;
             gate[ch] = 1.5f;
             up[ch] = 1.0f;
+            clocks.begin_span(PerfSpan::Trace);
             hooks.on_ffn_activations(layer, gate.data(), up.data());
+            clocks.end_span(PerfSpan::Trace);
             streamer.evict_ffn(layer);
             if (is_delta_net_layer(layer)) {
                 hout[0] = hin[0] + (layer % 7 == 0 ? 0.5f : 0.f);
@@ -78,6 +97,7 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
                                       hout.data(), 32);
             }
         }
+        clocks.end_span(PerfSpan::Gpu);
         const uint32_t sampled = 2000 + t;
         const uint32_t topk[] = {3000 + t, 5u};
         streamer.enter_logits();
@@ -88,18 +108,39 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
         }
         hooks.after_logits(t, t == 0);
         streamer.leave_logits();
-        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() &&
+        clocks.end_token();
+        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() && !cfg.pack_checkpoint &&
             hooks.table().n_tokens > 0 &&
             (hooks.table().n_tokens % cfg.checkpoint_every) == 0) {
             std::string err;
+            hooks.pull_gpu_accums();
             checkpoint_prune_table(hooks.table(), cfg.out_path, &err);
+        }
+        if ((t + 1u) % 32u == 0) {
+            const PerfSnapshot snap = clocks.snapshot();
+            std::fprintf(stderr, "%s\n", format_performance_line(snap).c_str());
+            std::fprintf(stderr, "%s\n", format_performance_bottlenecks(snap).c_str());
+            if (cfg.on_stats) {
+                cfg.on_stats(snap);
+            }
         }
         if (cfg.abort && cfg.abort->load()) {
             break;
         }
     }
     streamer.end_session();
+    hooks.pull_gpu_accums();
     s.n_tokens = hooks.table().n_tokens;
+    s.perf = clocks.snapshot();
+    std::fprintf(stderr, "%s\n", format_performance_line(s.perf).c_str());
+    std::fprintf(stderr, "%s\n", format_performance_bottlenecks(s.perf).c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_tokens_per_sec_line(s.perf.tok_per_sec, static_cast<uint32_t>(s.n_tokens),
+                                            s.perf.wall_s)
+                     .c_str());
+    if (cfg.on_stats) {
+        cfg.on_stats(s.perf);
+    }
     s.message = "stub hour (synthetic activations; not a 27B pass)";
     return s;
 }

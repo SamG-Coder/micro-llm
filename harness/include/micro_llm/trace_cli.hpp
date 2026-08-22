@@ -12,14 +12,16 @@ namespace micro_llm {
 inline constexpr uint32_t kCliTestNPredict = 64;
 inline constexpr uint32_t kHourNPredict = 20000;
 inline constexpr uint32_t kHourCheckpointEvery = 2000;
-inline constexpr int32_t kHybridNGpuLayers = 99;
+// ngl is NOT the pin. 0 = CPU default. Tensor overrides pin the 16 GA
+// blocks + parked FFN. 16 parks the wrong 16 layers. 99 parks the file.
+inline constexpr int32_t kHybridNGpuLayers = 0;
 
 enum class TraceCliMode : uint8_t {
-    SampleUi = 0,     // --ui / no args: sample window, no GGUF
-    UiCheck = 1,      // --ui-check
-    CheckServe = 2,   // --check-serve
-    HourHeadless = 3, // --stub without --ui (tests)
-    HourLive = 4,     // --model (default UI) or --ui --model / --stub --ui
+    SampleUi = 0,      // --ui / no args: sample window, no GGUF
+    UiCheck = 1,       // --ui-check
+    CheckServe = 2,    // --check-serve
+    HourHeadless = 3,  // --stub without --ui (tests)
+    HourLive = 4,      // --model (default UI) or --ui --model / --stub --ui
 };
 
 struct TraceCliArgs {
@@ -33,8 +35,6 @@ struct TraceCliArgs {
     std::string check_serve;
 };
 
-// When --model is set without --n-predict, use 20000. CLI/struct default
-// stays 64 so --stub tests stay short.
 inline uint32_t resolve_n_predict(bool model_set, bool n_predict_set, uint32_t value) {
     if (model_set && !n_predict_set) {
         return kHourNPredict;
@@ -42,7 +42,6 @@ inline uint32_t resolve_n_predict(bool model_set, bool n_predict_set, uint32_t v
     return value;
 }
 
-// --model always opens the live window. --stub stays headless unless --ui.
 inline bool hour_should_open_ui(bool want_ui, bool has_model, bool stub) {
     if (has_model) {
         return true;
@@ -69,10 +68,15 @@ inline TraceCliMode resolve_trace_mode(const TraceCliArgs& a) {
 
 TraceCliArgs parse_trace_cli(int argc, char** argv);
 
-// Hybrid pin: n_gpu_layers=99, then pull FFN + DeltaNet weights to CPU.
-// Do NOT use ngl=16 (first 16 layers, the wrong 16).
 int32_t hybrid_n_gpu_layers();
+int32_t clamp_hybrid_n_gpu_layers(int32_t n);
 std::vector<std::string> hybrid_cpu_tensor_regexes();
+std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park = ffn_park_layers_that_fit());
 uint64_t pinned_ga_weight_bytes();
+uint64_t pinned_ga_kv_bytes();
+uint64_t streamed_ffn_workspace_bytes();
+uint32_t hybrid_ffn_park_layers();
+std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes);
+std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked);
 
 }  // namespace micro_llm

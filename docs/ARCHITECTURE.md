@@ -81,17 +81,21 @@ Keep anything that showed up in the prompt, the output, or the top-k logits, plu
 
 ### Trace path (host prunes)
 
-Streaming run, not a resident one.
+Streaming run, not a resident one. ngl=0. Tensor overrides, not ngl=99.
 
-Pin: CUDA, the 16 Gated Attention blocks (QKVO + KV), KV cache, DeltaNet state, embed.
+Pin: CUDA, the 16 Gated Attention QKVO blocks, embed. **Reserve KV to 20k (~1.3GB at 64KB/tok) before more park.** Two Q4 stream slots. Soft 14GB, hard 15.2. Never all 64 FFN. lm_head only at logits.
 
-Stream: FFNs (the 8+GB), including FFNs after the 16 Gated Attention blocks, from host RAM or NVMe mmap, double-buffered over PCIe. A Q4 FFN layer is about 150MB. Double-buffer peak is 300MB, not 150. Prefetch layer n+1 while n computes.
+Fill leftover under 14 with parked FFN. Stream the rest on CUDA (H2D + evict), not host ggml. 7-12 streamed layers is the >=20 tok/s path. Overlap transfer of n+1 with compute of n. Host pages pinned.
 
-Prefetch only overlaps if the host pages are pinned. Unpinned pages serialize the copy.
+7780 measured CUDA0 model 6760 MiB and 3.55 / 3.37 tok/s because unparked FFN still ran on CPU (64 * ~4.5ms ≈ 3.5 tok/s). Parking weights without CUDA compute does not move the needle.
 
-A PCIe 4 board makes the hour slower. It does not OOM.
+A Q4 FFN layer is about 150MB. Two stream slots are 300MB VRAM (team ~160MB measured pair; budget uses two full layers so gate+up+down fit). Prefetch only overlaps if the host pages are pinned.
 
-Peak weight VRAM around 3-4GB plus growing KV. 32k during the trace is fine. Expect single-digit to low-teens tok/s, 20k+ tokens in an hour.
+KV vs tok/s (do not drop ctx to fake speed): 4k 0.25GB / 8k 0.50GB / 16k 1.00GB / 20k 1.22GB reserved / 32k 2.00GB (needs ~5 fewer parked FFN or a slip toward 15.2). Decode is weight-bandwidth bound.
+
+Trace: GPU accumulators n_fired, sumsq, maxabs, this-token bitset. **No D2H of 17408 activations.** Host gets the ~140KB bitset into a 64-deep lock-free ring, async. UI at 60Hz from the ring. No WebView/JSON/file in the token path. MLPT only at the 2k checkpoint. Don't stamp until ~20k.
+
+Flash-attn stays off (FA + CPU FFN split AVed). Prefer llama.cpp/ggml CUDA kernels (Blackwell sm_120), not a custom GEMM. MTP off.
 
 Do not load the vision tower unless the session actually sends an image.
 

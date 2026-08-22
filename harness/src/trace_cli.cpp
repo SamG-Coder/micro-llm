@@ -3,15 +3,40 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 
 namespace micro_llm {
+namespace {
+
+std::string layer_alt(uint32_t lo, uint32_t hi_exclusive) {
+    std::ostringstream os;
+    os << '(';
+    for (uint32_t i = lo; i < hi_exclusive; ++i) {
+        if (i != lo) {
+            os << '|';
+        }
+        os << i;
+    }
+    os << ')';
+    return os.str();
+}
+
+}  // namespace
 
 int32_t hybrid_n_gpu_layers() { return kHybridNGpuLayers; }
 
+int32_t clamp_hybrid_n_gpu_layers(int32_t n) {
+    if (n == 16 || n == 99) {
+        return kHybridNGpuLayers;
+    }
+    return n;
+}
+
+uint32_t hybrid_ffn_park_layers() { return ffn_park_layers_that_fit(); }
+
 std::vector<std::string> hybrid_cpu_tensor_regexes() {
-    // n_gpu_layers=99 puts tensors on CUDA. These regexes pull FFN and
-    // DeltaNet weights back to CPU. GA QKVO (attn_q/k/v/output on layers
-    // 3,7,...,63) is not in this list and stays on the card with KV.
+    // Catch-all after GPU overrides. Unparked FFN + DeltaNet + MTP + lm_head.
+    // First matching override wins, so parked FFN GPU patterns must be first.
     return {
         "blk\\.[0-9]+\\.ffn_gate",
         "blk\\.[0-9]+\\.ffn_up",
@@ -19,12 +44,55 @@ std::vector<std::string> hybrid_cpu_tensor_regexes() {
         "blk\\.[0-9]+\\.ssm_",
         "blk\\.[0-9]+\\.attn_qkv",
         "blk\\.[0-9]+\\.attn_gate",
+        "nextn",
+        "shared_head",
+        "output\\.weight",
     };
 }
 
-uint64_t pinned_ga_weight_bytes() {
-    // 16 Gated Attention blocks at Q4, ~0.6 GiB. Card stack, not host GGUF.
-    return (6ull * kGiB) / 10ull;
+std::vector<std::string> hybrid_gpu_tensor_regexes(uint32_t n_park) {
+    if (n_park > kMaxParkedFfnLayers) {
+        n_park = kMaxParkedFfnLayers;
+    }
+    std::vector<std::string> out;
+    if (n_park > 0) {
+        const std::string alt = layer_alt(0, n_park);
+        out.push_back("blk\\." + alt + "\\.ffn_gate");
+        out.push_back("blk\\." + alt + "\\.ffn_up");
+        out.push_back("blk\\." + alt + "\\.ffn_down");
+    }
+    // Pin only the 16 Gated Attention QKVO blocks (layers 3,7,...,63).
+    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_q[^k]");
+    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_k");
+    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_v");
+    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_output");
+    out.push_back("blk\\.(3|7|11|15|19|23|27|31|35|39|43|47|51|55|59|63)\\.attn_norm");
+    // Embed on card. lm_head stays host (logits only).
+    out.push_back("token_embd");
+    return out;
+}
+
+uint64_t pinned_ga_weight_bytes() { return kPinnedGaWeightBytes; }
+
+uint64_t pinned_ga_kv_bytes() { return kPinnedGaWeightBytes + kHourKvReserveBytes; }
+
+uint64_t streamed_ffn_workspace_bytes() { return kStreamWorkspaceBytes; }
+
+std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes) {
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+                  "ffn_cuda_park n=%u bytes=%llu stream_slots=%u stream_bytes=%u "
+                  "never_64=1 ngl=0 kv20k_bytes=%llu",
+                  n_park, static_cast<unsigned long long>(bytes), kNStreamSlots,
+                  kStreamWorkspaceBytes, static_cast<unsigned long long>(kHourKvReserveBytes));
+    return buf;
+}
+
+std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked) {
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "ffn_cuda_bind layer=%u parked=%d stream=%d workspace=cuda",
+                  layer, parked ? 1 : 0, parked ? 0 : 1);
+    return buf;
 }
 
 TraceCliArgs parse_trace_cli(int argc, char** argv) {
@@ -37,7 +105,10 @@ TraceCliArgs parse_trace_cli(int argc, char** argv) {
     out.cfg.checkpoint_every = kHourCheckpointEvery;
     out.cfg.continue_after_eos = true;
     out.cfg.disable_flash_attn = true;
-    out.cfg.disable_op_offload = true;
+    out.cfg.disable_op_offload = false;
+    out.cfg.load_mtp = false;
+    out.cfg.pack_checkpoint = false;
+    out.cfg.n_parked_ffn = hybrid_ffn_park_layers();
 
     for (int i = 1; i < argc; ++i) {
         auto need = [&](const char* flag) -> const char* {
@@ -81,6 +152,7 @@ TraceCliArgs parse_trace_cli(int argc, char** argv) {
 
     out.cfg.n_predict =
         resolve_n_predict(!out.cfg.model_path.empty(), out.n_predict_set, out.cfg.n_predict);
+    out.cfg.n_gpu_layers = clamp_hybrid_n_gpu_layers(out.cfg.n_gpu_layers);
     return out;
 }
 

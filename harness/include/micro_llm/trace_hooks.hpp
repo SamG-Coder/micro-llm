@@ -35,12 +35,19 @@ public:
     bool on_ffn_activations(uint32_t layer, const float* gate, const float* up,
                             uint32_t n_channels = kFfnIntermediate);
 
-    // Live device pointers. Persistent CUDA context; no per-token
-    // cudaMalloc/H2D of gate/up. Marks the layer hooked. Returns false
-    // if CUDA is not built or the pointers are unusable.
+    // Live device pointers. GPU accumulators (n_fired/sumsq/maxabs) +
+    // this-token bitset. NO D2H of 17408 activations. Returns false if
+    // CUDA is not built or the pointers are unusable.
     bool on_ffn_activations_device(uint32_t layer, const float* d_gate,
                                    const float* d_up,
                                    uint32_t n_channels = kFfnIntermediate);
+
+    // Async D2H of the ~140KB bitset into token_fired_. Not 17408 floats.
+    bool pull_token_bitset_async();
+    bool sync_gpu_trace();
+    // 2k checkpoint / end: copy GPU accums into the host table.
+    bool pull_gpu_accums();
+    bool gpu_accums_active() const { return gpu_accums_; }
 
     // Already-reduced |SiLU(gate)*up| for one token (no [chunk x C] scratch).
     bool on_ffn_abs(uint32_t layer, const float* abs_act,
@@ -80,6 +87,7 @@ private:
     std::vector<float> abs_scratch_;  // one token, 17408 floats — not [chunk x C]
     uint32_t token_index_ = 0;
     bool token_open_ = false;
+    bool gpu_accums_ = false;
 };
 
 }  // namespace micro_llm

@@ -36,7 +36,7 @@ Harness and export are on main. Streamer dumps scores. Packer cuts and writes th
 
 First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.md).
 
-Hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. `--ui` / no args is the sample ring. `--model PATH.gguf` (with or without `--ui`) opens the live hour window and decodes. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/). Per-token flash: [docs/HOOK_RING.md](docs/HOOK_RING.md).
+Hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. `--ui` / no args is the sample ring. `--model PATH.gguf` (with or without `--ui`) opens the live hour window and decodes. Hour pin is `ngl=0` plus tensor overrides (parked FFN + 16 GA on CUDA; streamed FFN H2D+evict). PERFORMANCE lines on stderr. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/). Per-token flash: [docs/HOOK_RING.md](docs/HOOK_RING.md).
 
 ## Build
 

@@ -6,6 +6,8 @@
 
 #include <cuda_runtime.h>
 
+#include <vector>
+
 namespace micro_llm {
 namespace {
 
@@ -23,13 +25,53 @@ __global__ void ffn_reduce_token_kernel(const float* gate, const float* up,
     }
     const float act = silu_dev(gate[c]) * up[c];
     const float a = fabsf(act);
-    abs_out[c] = a;
+    if (abs_out) {
+        abs_out[c] = a;
+    }
     if (a > eps) {
         atomicAdd(n_fired, 1u);
         if (fired_bits) {
             atomicOr(reinterpret_cast<unsigned int*>(fired_bits + (c >> 3)),
                      1u << (c & 7u));
         }
+    }
+}
+
+// Hour path: GPU accumulators. No 17408-float D2H.
+__global__ void ffn_accum_token_kernel(const float* gate, const float* up,
+                                       uint32_t* n_fired, float* sumsq, float* maxabs,
+                                       uint8_t* token_bits, uint32_t layer,
+                                       uint32_t n_channels, float eps) {
+    const uint32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_channels) {
+        return;
+    }
+    const float act = silu_dev(gate[c]) * up[c];
+    const float a = fabsf(act);
+    if (a <= eps) {
+        return;
+    }
+    const size_t idx = static_cast<size_t>(layer) * n_channels + c;
+    atomicAdd(n_fired + idx, 1u);
+    atomicAdd(sumsq + idx, a * a);
+    // maxabs: CAS loop
+    int* as_i = reinterpret_cast<int*>(maxabs + idx);
+    int old = *as_i;
+    while (true) {
+        const float old_f = __int_as_float(old);
+        if (a <= old_f) {
+            break;
+        }
+        const int assumed = old;
+        old = atomicCAS(as_i, assumed, __float_as_int(a));
+        if (old == assumed) {
+            break;
+        }
+    }
+    if (token_bits) {
+        const size_t bit = static_cast<size_t>(layer) * n_channels + c;
+        atomicOr(reinterpret_cast<unsigned int*>(token_bits + (bit >> 3)),
+                 1u << (bit & 7u));
     }
 }
 
@@ -99,7 +141,110 @@ void CudaReduceContext::release() {
     cuda_free_ptr(d_nf_);
     cuda_free_ptr(d_gate_scratch_);
     cuda_free_ptr(d_up_scratch_);
+    cuda_free_ptr(d_n_fired_);
+    cuda_free_ptr(d_sumsq_);
+    cuda_free_ptr(d_maxabs_);
+    cuda_free_ptr(d_token_bits_);
     cap_ = 0;
+}
+
+bool CudaReduceContext::ensure_accums() {
+    if (!ensure(kFfnIntermediate)) {
+        return false;
+    }
+    if (d_n_fired_ && d_sumsq_ && d_maxabs_ && d_token_bits_) {
+        return true;
+    }
+    const size_t n = static_cast<size_t>(kNLayers) * kFfnIntermediate;
+    uint32_t* nf = nullptr;
+    float* ss = nullptr;
+    float* mx = nullptr;
+    uint8_t* bits = nullptr;
+    if (cudaMalloc(&nf, n * sizeof(uint32_t)) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMalloc(&ss, n * sizeof(float)) != cudaSuccess) {
+        cudaFree(nf);
+        return false;
+    }
+    if (cudaMalloc(&mx, n * sizeof(float)) != cudaSuccess) {
+        cudaFree(nf);
+        cudaFree(ss);
+        return false;
+    }
+    if (cudaMalloc(&bits, kFloorBitsetBytes) != cudaSuccess) {
+        cudaFree(nf);
+        cudaFree(ss);
+        cudaFree(mx);
+        return false;
+    }
+    cudaMemset(nf, 0, n * sizeof(uint32_t));
+    cudaMemset(ss, 0, n * sizeof(float));
+    cudaMemset(mx, 0, n * sizeof(float));
+    cudaMemset(bits, 0, kFloorBitsetBytes);
+    d_n_fired_ = nf;
+    d_sumsq_ = ss;
+    d_maxabs_ = mx;
+    d_token_bits_ = bits;
+    return true;
+}
+
+void CudaReduceContext::begin_token_device() {
+    if (d_token_bits_) {
+        cudaMemsetAsync(d_token_bits_, 0, kFloorBitsetBytes, 0);
+    }
+}
+
+int CudaReduceContext::accum_device(uint32_t layer, const float* d_gate, const float* d_up,
+                                    uint32_t n_channels, float eps) {
+    if (!d_gate || !d_up || layer >= kNLayers || n_channels == 0) {
+        return -1;
+    }
+    if (!ensure_accums()) {
+        return -1;
+    }
+    const int threads = 128;
+    const int blocks = static_cast<int>((n_channels + threads - 1u) / threads);
+    ffn_accum_token_kernel<<<blocks, threads>>>(
+        d_gate, d_up, static_cast<uint32_t*>(d_n_fired_), static_cast<float*>(d_sumsq_),
+        static_cast<float*>(d_maxabs_), static_cast<uint8_t*>(d_token_bits_), layer,
+        n_channels, eps);
+    return cudaGetLastError() == cudaSuccess ? 0 : -1;
+}
+
+bool CudaReduceContext::async_d2h_bitset(uint8_t* host_bits) {
+    if (!host_bits || !d_token_bits_) {
+        return false;
+    }
+    return cudaMemcpyAsync(host_bits, d_token_bits_, kFloorBitsetBytes,
+                           cudaMemcpyDeviceToHost, 0) == cudaSuccess;
+}
+
+bool CudaReduceContext::sync_d2h() { return cudaDeviceSynchronize() == cudaSuccess; }
+
+bool CudaReduceContext::d2h_layer_accums(uint32_t layer, uint64_t* n_fired, float* sumsq,
+                                         float* maxabs, uint32_t n_channels) {
+    if (!n_fired || !sumsq || !maxabs || layer >= kNLayers || !d_n_fired_) {
+        return false;
+    }
+    std::vector<uint32_t> nf(n_channels, 0);
+    const size_t off = static_cast<size_t>(layer) * kFfnIntermediate;
+    if (cudaMemcpy(nf.data(), static_cast<uint32_t*>(d_n_fired_) + off,
+                   n_channels * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMemcpy(sumsq, static_cast<float*>(d_sumsq_) + off, n_channels * sizeof(float),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
+    if (cudaMemcpy(maxabs, static_cast<float*>(d_maxabs_) + off, n_channels * sizeof(float),
+                   cudaMemcpyDeviceToHost) != cudaSuccess) {
+        return false;
+    }
+    for (uint32_t c = 0; c < n_channels; ++c) {
+        n_fired[c] = nf[c];
+    }
+    return true;
 }
 
 int CudaReduceContext::reduce_device(const float* d_gate, const float* d_up,

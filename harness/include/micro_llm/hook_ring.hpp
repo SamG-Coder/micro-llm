@@ -6,6 +6,7 @@
 
 #include "micro_llm/types.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -64,22 +65,27 @@ bool decode_htr1_record(const uint8_t* rec, Htr1TokenMeta* meta, uint8_t* ffn_fi
 // Optional 16-byte file header + one record. Viewer accepts either.
 void write_htr1_header(uint8_t* out);
 
+// SPSC overwrite ring. Decode thread pushes; UI reads at 60Hz.
+// No mutex. No WebView / JSON / file in push().
 class HookRing {
 public:
     HookRing();
 
     // Overwrite ring. Depth 64. Returns the slot that was written.
     uint32_t push(const uint8_t* rec);
-    uint32_t count() const { return count_; }
-    uint32_t next_slot() const { return next_; }
+    uint32_t count() const;
+    uint32_t next_slot() const;
     const uint8_t* slot(uint32_t i) const;
     const uint8_t* latest() const;
     uint32_t latest_slot() const;
+    // Copy latest into out (kHtr1RecordBytes). False if empty or torn.
+    bool copy_latest(uint8_t* out) const;
+    uint32_t seq() const { return seq_.load(std::memory_order_acquire); }
 
 private:
     std::vector<uint8_t> buf_;
-    uint32_t next_ = 0;
-    uint32_t count_ = 0;
+    std::atomic<uint32_t> seq_{0};
+    std::atomic<uint32_t> slot_seq_[kHtr1RingDepth];
 };
 
 }  // namespace micro_llm

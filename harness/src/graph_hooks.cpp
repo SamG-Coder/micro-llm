@@ -93,6 +93,14 @@ void GraphHookSession::finish_token(uint32_t sampled, const uint32_t* topk, uint
     if (topk && k) {
         hooks_.on_topk_ids(topk, k);
     }
+    // GPU bitset (~140KB) into host, then the lock-free ring. No 17408 D2H.
+    if (hooks_.gpu_accums_active()) {
+        hooks_.pull_token_bitset_async();
+        hooks_.sync_gpu_trace();
+        if (streamer_.perf()) {
+            streamer_.perf()->add_d2h(kFloorBitsetBytes);
+        }
+    }
     if (on_htr1_) {
         emit_htr1(hooks_, sampled, topk, k, special_or_high_loss, on_htr1_);
     }
@@ -110,11 +118,12 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
     if (ask) {
         if (site == GraphHookSite::FfnGate || site == GraphHookSite::FfnUp) {
             if (layer >= 0) {
-                const uint32_t next = static_cast<uint32_t>(layer) + 1;
-                if (next < kNLayers) {
+                const uint32_t cur = static_cast<uint32_t>(layer);
+                const uint32_t next = streamer_.next_streamed_layer(cur);
+                if (next != ~0u) {
                     streamer_.prefetch_ffn(next);
                 }
-                streamer_.bind_ffn(static_cast<uint32_t>(layer));
+                streamer_.bind_ffn(cur);
             }
         }
         return true;

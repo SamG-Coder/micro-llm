@@ -45,6 +45,7 @@ add_library(micro_llm
   src/llama_forward.cpp
   src/hook_ring.cpp
   src/trace_cli.cpp
+  src/perf.cpp
 )
 target_include_directories(micro_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(micro_llm PUBLIC cxx_std_17)
@@ -160,7 +161,7 @@ target_link_libraries(micro-llm-trace PRIVATE micro_llm micro_llm_ui)
 micro_llm_set_warnings(micro-llm-trace)
 
 add_executable(micro-llm-view src/cli_view.cpp)
-target_link_libraries(micro-llm-view PRIVATE micro_llm_ui)
+target_link_libraries(micro-llm-view PRIVATE micro_llm_ui micro_llm)
 micro_llm_set_warnings(micro-llm-view)
 if(WIN32)
   set_target_properties(micro-llm-view PROPERTIES WIN32_EXECUTABLE TRUE)
@@ -200,6 +201,8 @@ add_executable(micro_llm_tests
   tests/test_hotspot_ui.cpp
   tests/test_hook_ring.cpp
   tests/test_hour_cli.cpp
+  tests/test_ffn_stream.cpp
+  tests/test_perf.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(micro_llm_tests PRIVATE micro_llm micro_llm_ui)

@@ -20,6 +20,10 @@ void TraceHooks::begin_token(uint32_t token_index) {
     token_open_ = true;
     std::fill(token_fired_.begin(), token_fired_.end(), 0);
     token_pack_rel_.fill(0.f);
+    if (persistent_cuda_reduce().ensure_accums()) {
+        gpu_accums_ = true;
+        persistent_cuda_reduce().begin_token_device();
+    }
 }
 
 bool TraceHooks::on_ffn_activations(uint32_t layer, const float* gate, const float* up,
@@ -51,16 +55,62 @@ bool TraceHooks::on_ffn_activations_device(uint32_t layer, const float* d_gate,
     if (!token_open_) {
         begin_token(token_index_);
     }
+    auto& ctx = persistent_cuda_reduce();
+    if (ctx.ensure_accums()) {
+        gpu_accums_ = true;
+        const int rc =
+            ctx.accum_device(layer, d_gate, d_up, n_channels, table_.fire_eps);
+        if (rc < 0) {
+            return false;
+        }
+        table_.mark_layer_hooked(layer);
+        return true;
+    }
+    // Fallback: old path D2Hs 17408 abs. Hour CUDA must take the accum path.
     const int rc = ffn_reduce_token_cuda_device(d_gate, d_up, abs_scratch_.data(),
                                                 nullptr, n_channels, table_.fire_eps);
     if (rc < 0) {
         return false;
     }
-    const bool ok = on_ffn_abs(layer, abs_scratch_.data(), n_channels);
-    if (ok) {
-        table_.mark_layer_hooked(layer);
+    return on_ffn_abs(layer, abs_scratch_.data(), n_channels);
+}
+
+bool TraceHooks::pull_token_bitset_async() {
+    if (!gpu_accums_) {
+        return false;
     }
-    return ok;
+    return persistent_cuda_reduce().async_d2h_bitset(token_fired_.data());
+}
+
+bool TraceHooks::sync_gpu_trace() {
+    if (!gpu_accums_) {
+        return true;
+    }
+    return persistent_cuda_reduce().sync_d2h();
+}
+
+bool TraceHooks::pull_gpu_accums() {
+    if (!gpu_accums_) {
+        return false;
+    }
+    auto& ctx = persistent_cuda_reduce();
+    std::vector<uint64_t> nf(kFfnIntermediate, 0);
+    std::vector<float> ss(kFfnIntermediate, 0.f);
+    std::vector<float> mx(kFfnIntermediate, 0.f);
+    bool any = false;
+    for (uint32_t layer = 0; layer < kNLayers; ++layer) {
+        if (!ctx.d2h_layer_accums(layer, nf.data(), ss.data(), mx.data(), kFfnIntermediate)) {
+            continue;
+        }
+        any = true;
+        for (uint32_t c = 0; c < kFfnIntermediate; ++c) {
+            ChannelStat& s = table_.channel(layer, c);
+            s.n_fired = nf[c];
+            s.sumsq = ss[c];
+            s.maxabs = mx[c];
+        }
+    }
+    return any;
 }
 
 bool TraceHooks::on_ffn_abs(uint32_t layer, const float* abs_act, uint32_t n_channels) {

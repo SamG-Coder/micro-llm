@@ -114,11 +114,19 @@ std::string hotspot_ui_dir(std::string* err) {
     return {};
 }
 
+HookRing& hotspot_live_ring() {
+    static HookRing ring;
+    return ring;
+}
+
 void hotspot_live_push_htr1(const uint8_t* rec, size_t nbytes) {
+    if (rec && nbytes >= kHtr1RecordBytes) {
+        hotspot_live_ring().push(rec);
+    }
 #ifdef MICRO_LLM_HAS_WEBVIEW2
-    micro_llm_hotspot_win32_push_htr1(rec, nbytes);
+    // Win32 window polls the ring at 60Hz. Do not PostWebMessage here.
+    (void)nbytes;
 #else
-    (void)rec;
     (void)nbytes;
 #endif
 }

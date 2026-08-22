@@ -46,12 +46,30 @@ public:
     int reduce_host(const float* gate, const float* up, float* abs_out,
                     uint8_t* fired_bits, uint32_t n_channels, float eps);
 
+    // GPU accumulators: n_fired / sumsq / maxabs + this-token bitset.
+    // No D2H of 17408 activations. Host gets the ~140KB bitset only.
+    bool ensure_accums();
+    bool accums_ready() const { return d_n_fired_ != nullptr; }
+    void begin_token_device();
+    int accum_device(uint32_t layer, const float* d_gate, const float* d_up,
+                     uint32_t n_channels, float eps);
+    // Async D2H of the 64x17408 bitset (~140KB) into host. Not 17408 floats.
+    bool async_d2h_bitset(uint8_t* host_bits);
+    bool sync_d2h();
+    // Checkpoint / end: pull n_fired, sumsq, maxabs for one layer.
+    bool d2h_layer_accums(uint32_t layer, uint64_t* n_fired, float* sumsq, float* maxabs,
+                          uint32_t n_channels);
+
 private:
     void* d_abs_ = nullptr;
     void* d_bits_ = nullptr;
     void* d_nf_ = nullptr;
     void* d_gate_scratch_ = nullptr;
     void* d_up_scratch_ = nullptr;
+    void* d_n_fired_ = nullptr;
+    void* d_sumsq_ = nullptr;
+    void* d_maxabs_ = nullptr;
+    void* d_token_bits_ = nullptr;
     uint32_t cap_ = 0;
 };
 

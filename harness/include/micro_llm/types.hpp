@@ -26,6 +26,17 @@ inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
+// Two Q4 stream slots. Team lock quotes ~160MB measured; budget uses two
+// full Q4_K layers (300MB) so a real gate+up+down actually fits. Never
+// park all 64. Stream 7-12 layers — that is the >=20 tok/s path.
+inline constexpr uint32_t kNStreamSlots = 2;
+inline constexpr uint32_t kStreamSlotPairBudgetBytes = 160u * 1024u * 1024u;
+inline constexpr uint32_t kStreamWorkspaceBytes = kNStreamSlots * kQ4FfnLayerBytes;
+inline constexpr uint32_t kMinStreamedFfnLayers = 7;
+inline constexpr uint32_t kTargetMaxStreamedFfnLayers = 12;
+inline constexpr uint32_t kMaxParkedFfnLayers = kNLayers - kMinStreamedFfnLayers;  // 57
+// Extra GGUF block (block_count=65, nextn_predict_layers=1) is MTP.
+inline constexpr uint32_t kMtpExtraBlocks = 1;
 inline constexpr uint32_t kFloorBitsetBytes =
     (kNLayers * kFfnIntermediate) / 8u;                  // 139264 ~ 140KB
 inline constexpr uint32_t kVocabBitsetBytes = (kVocabSize + 7u) / 8u;
@@ -56,6 +67,25 @@ inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  /
 inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
 inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
 inline constexpr uint64_t kDefaultServeCtx = 8192ull;
+// Hour card: 14GB soft, 15.2 hard. Reserve KV to 20k BEFORE more park.
+inline constexpr uint64_t kHourCardSoftBytes = 14ull * kGiB;
+inline constexpr uint32_t kHourKvReserveTokens = 20000;
+inline constexpr uint64_t kHourKvReserveBytes =
+    static_cast<uint64_t>(kHourKvReserveTokens) * kKvBytesPerTokenFp16;  // ~1.22 GiB / ~1.3GB
+// 16 GA QKVO at Q4 ~0.6 GiB. Embed ~0.7 GiB. lm_head stays host (logits only).
+inline constexpr uint64_t kPinnedGaWeightBytes = (6ull * kGiB) / 10ull;
+inline constexpr uint64_t kPinnedEmbedWeightBytes = (7ull * kGiB) / 10ull;
+// 7780 live: ngl=99 + FFN CPU overrides. CUDA0 model 6760 MiB (GA+embed+lm_head
+// + norms). tok/s 3.55 @ 192, 3.37 @ 1136. Unparked FFN ran host ggml.
+inline constexpr uint64_t kMeasured7780Cuda0MiB = 6760ull;
+inline constexpr uint32_t kMeasured7780Tok192 = 192;
+inline constexpr uint32_t kMeasured7780Tok1136 = 1136;
+inline constexpr float kMeasured7780TokPerSec192 = 3.55f;
+inline constexpr float kMeasured7780TokPerSec1136 = 3.37f;
+// CPU Q4 FFN decode ~4.5ms/layer matches 7780: 64*4.5ms = 288ms = 3.47 tok/s.
+inline constexpr float kCpuFfnMsPerLayer7780 = 4.5f;
+// PCIe 5.0 x16 practical copy. Unpinned pages serialize well below this.
+inline constexpr float kPcie5PracticalGBs = 50.0f;
 
 // Refuse unless serve_ok is present and true. Then refuse if
 // file_size + cuda_scratch + kv_bytes_per_token * ctx > usable (15.2 GiB default).
@@ -99,6 +129,89 @@ inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
     }
     return remnant_serve_allowed(key_present, serve_ok);
 }
+
+// Fixed hour card before any parked FFN. KV 20k is reserved first.
+inline constexpr uint64_t hour_fixed_card_bytes(
+    uint64_t stream_workspace = kStreamWorkspaceBytes) {
+    return kPinnedGaWeightBytes + kPinnedEmbedWeightBytes + kCudaScratchBytes +
+           kHourKvReserveBytes + stream_workspace;
+}
+
+inline constexpr uint32_t ffn_park_layers_that_fit(
+    uint64_t card = kHourCardSoftBytes,
+    uint64_t stream_workspace = kStreamWorkspaceBytes) {
+    const uint64_t need = hour_fixed_card_bytes(stream_workspace);
+    if (need >= card) {
+        return 0;
+    }
+    uint32_t n = static_cast<uint32_t>((card - need) / kQ4FfnLayerBytes);
+    if (n > kMaxParkedFfnLayers) {
+        n = kMaxParkedFfnLayers;
+    }
+    return n;
+}
+
+inline constexpr uint32_t ffn_stream_layers(uint32_t n_park = ffn_park_layers_that_fit()) {
+    return n_park >= kNLayers ? 0u : (kNLayers - n_park);
+}
+
+inline constexpr uint64_t hour_park_stream_card_bytes(uint32_t n_park) {
+    return hour_fixed_card_bytes() + static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes;
+}
+
+inline constexpr bool hour_park_stream_fits(uint32_t n_park) {
+    const uint64_t stack = hour_park_stream_card_bytes(n_park);
+    return n_park < kNLayers && n_park <= kMaxParkedFfnLayers &&
+           stack <= kHourCardSoftBytes && stack <= kServeUsableBytes;
+}
+
+inline constexpr bool parked_all_ffn_exceeds_card(
+    uint32_t n_ffn_layers = kNLayers,
+    uint64_t usable = kServeUsableBytes) {
+    return hour_park_stream_card_bytes(n_ffn_layers) > usable || n_ffn_layers >= kNLayers;
+}
+
+inline constexpr bool streamed_hour_in_20_tok_band(uint32_t n_stream) {
+    return n_stream >= kMinStreamedFfnLayers && n_stream <= kTargetMaxStreamedFfnLayers;
+}
+
+// Hook ring is 64. block_count=65 is 64 + MTP; do not count the extra block.
+inline constexpr bool gguf_block_count_is_hybrid(uint32_t block_count) {
+    return block_count == kNLayers || block_count == kNLayers + kMtpExtraBlocks;
+}
+
+inline constexpr uint32_t hook_layer_count_from_blocks(uint32_t block_count) {
+    if (block_count == kNLayers + kMtpExtraBlocks) {
+        return kNLayers;
+    }
+    return block_count;
+}
+
+// 7780: 64 CPU FFN layers * 4.5ms = 3.47 tok/s. Matches 3.55 / 3.37.
+inline constexpr double cpu_ffn_tok_per_sec(double ms_per_layer = kCpuFfnMsPerLayer7780,
+                                            uint32_t n_layers = kNLayers) {
+    const double ms = ms_per_layer * static_cast<double>(n_layers);
+    return ms > 0.0 ? 1000.0 / ms : 0.0;
+}
+
+// Streamed FFN H2D only. Parked layers are GDDR-resident (not this bound).
+// 12 * 150MiB / 50 GB/s ≈ 36ms → ~28 tok/s. 7 layers → ~47 tok/s.
+// If those layers stay on host ggml, 12 * 4.5ms = 18.5 tok/s — not the 20+ path.
+inline constexpr double stream_pcie_tok_per_sec(
+    uint32_t n_stream,
+    double gbs = kPcie5PracticalGBs,
+    uint64_t layer_bytes = kQ4FfnLayerBytes) {
+    const double gb = static_cast<double>(n_stream) * static_cast<double>(layer_bytes) / 1.0e9;
+    return gb > 0.0 ? gbs / gb : 0.0;
+}
+
+// KV vs tok/s (decode is weight-bandwidth bound; do not drop ctx to fake speed):
+//   4k  → 0.25 GiB KV. Same tok/s as short ctx; 16 GA layers only.
+//   8k  → 0.50 GiB.
+//   16k → 1.00 GiB.
+//   20k → 1.22 GiB reserved before park.
+//   32k → 2.00 GiB. Soft-14 needs ~5 fewer parked FFN (or spill toward 15.2).
+// Measure 4k/8k/16k/32k on the 5080. Do not shrink the model.
 
 // r = ||out-in||_2 / (||in||_2 + 1e-12). Identity => 0.
 inline float relative_residual_l2(const float* hidden_in, const float* hidden_out,

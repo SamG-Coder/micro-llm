@@ -15,8 +15,9 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, kHourNPredict == 20000u);
     CHECK(ctx, kHourCheckpointEvery == 2000u);
 
-    CHECK(ctx, hybrid_n_gpu_layers() == 99);
+    CHECK(ctx, hybrid_n_gpu_layers() == 0);
     CHECK(ctx, hybrid_n_gpu_layers() != 16);
+    CHECK(ctx, hybrid_n_gpu_layers() != 99);
     const auto pats = hybrid_cpu_tensor_regexes();
     bool has_gate = false, has_up = false, has_down = false, has_ssm = false;
     bool has_wrong_ngl = false;
@@ -53,13 +54,14 @@ void test_hour_cli_resolve(TestContext& ctx) {
     const TraceCliArgs a2 = parse_trace_cli(3, model_only);
     CHECK(ctx, resolve_trace_mode(a2) == TraceCliMode::HourLive);
     CHECK(ctx, a2.cfg.n_predict == kHourNPredict);
-    CHECK(ctx, a2.cfg.n_gpu_layers == 99);
+    CHECK(ctx, a2.cfg.n_gpu_layers == 0);
     CHECK(ctx, a2.cfg.n_batch == 512);
     CHECK(ctx, a2.cfg.n_ubatch == 32);
     CHECK(ctx, a2.cfg.checkpoint_every == 2000);
     CHECK(ctx, a2.cfg.continue_after_eos);
     CHECK(ctx, a2.cfg.disable_flash_attn);
-    CHECK(ctx, a2.cfg.disable_op_offload);
+    CHECK(ctx, !a2.cfg.disable_op_offload);
+    CHECK(ctx, !a2.cfg.load_mtp);
 
     char* both[] = {const_cast<char*>("micro-llm-trace"), ui, model, path, nullptr};
     const TraceCliArgs a3 = parse_trace_cli(4, both);

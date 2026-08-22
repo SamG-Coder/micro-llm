@@ -11,5 +11,6 @@
 #include "micro_llm/serve.hpp"
 #include "micro_llm/graph_hooks.hpp"
 #include "micro_llm/hook_ring.hpp"
+#include "micro_llm/perf.hpp"
 #include "micro_llm/live_forward.hpp"
 #include "micro_llm/trace_cli.hpp"
