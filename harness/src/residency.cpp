@@ -270,7 +270,8 @@ std::string streamed_alt(const ResidencyPlan& plan) {
 
 }  // namespace
 
-ResidencyPlan plan_residency(const WeightCatalog& cat, uint32_t n_ctx, bool force_host_deltanet) {
+ResidencyPlan plan_residency(const WeightCatalog& cat, uint32_t n_ctx, bool force_host_deltanet,
+                             bool use_quant_kv) {
     ResidencyPlan p;
     p.catalog = cat;
     p.n_ctx = n_ctx == 0 ? kDefaultServeCtx : n_ctx;
@@ -280,11 +281,14 @@ ResidencyPlan plan_residency(const WeightCatalog& cat, uint32_t n_ctx, bool forc
     p.pin_embed = false;
     p.pin_lm_head = false;
     p.pin_norm = true;
-    p.use_quant_kv = true;
+    p.use_quant_kv = use_quant_kv;
     p.disable_op_offload = true;
     p.scratch_bytes = kCudaScratchBytes;
     p.stream_slot_bytes = kQ4FfnLayerBytes;
-    p.kv_bytes = static_cast<uint64_t>(p.n_ctx) * kKvBytesPerTokenFp8;  // Q8/FP8
+    // Reserve 20k KV (or n_ctx if larger) BEFORE parking under 14 GiB.
+    // If nvidia + KV would break 14, cut park, never this reserve.
+    p.kv_reserve_tokens = kv_reserve_tokens_for_ctx(p.n_ctx);
+    p.kv_bytes = hour_kv_reserve_bytes(p.n_ctx, p.use_quant_kv);
     p.deltanet_must_be_cuda = true;
 
     uint64_t ffn_bytes = 0;
@@ -446,8 +450,8 @@ std::string format_residency_plan(const ResidencyPlan& plan) {
     char buf[768];
     std::snprintf(buf, sizeof(buf),
                   "residency n_park=%u n_stream=%u ga=%llu dn=%llu embed_host=%llu "
-                  "lm_head_cpu=%llu vram_w=%llu cuda_host=%llu kv=%llu stack=%llu "
-                  "pcie_B/tok=%llu flash=%d qkv=%d ngl=%d never_64=1 catalog=%s",
+                  "lm_head_cpu=%llu vram_w=%llu cuda_host=%llu kv=%llu kv_reserve=%u "
+                  "stack=%llu pcie_B/tok=%llu flash=%d qkv=%d ngl=%d never_64=1 catalog=%s",
                   plan.n_parked_ffn, plan.n_streamed_ffn,
                   static_cast<unsigned long long>(plan.catalog.ga_bytes),
                   static_cast<unsigned long long>(plan.catalog.deltanet_bytes),
@@ -455,7 +459,7 @@ std::string format_residency_plan(const ResidencyPlan& plan) {
                   static_cast<unsigned long long>(plan.catalog.lm_head_bytes),
                   static_cast<unsigned long long>(plan.vram_weight_bytes),
                   static_cast<unsigned long long>(plan.cuda_host_bytes),
-                  static_cast<unsigned long long>(plan.kv_bytes),
+                  static_cast<unsigned long long>(plan.kv_bytes), plan.kv_reserve_tokens,
                   static_cast<unsigned long long>(plan.card_stack_bytes),
                   static_cast<unsigned long long>(plan.pcie_bytes_per_token),
                   plan.enable_flash_attn ? 1 : 0, plan.use_quant_kv ? 1 : 0, plan.n_gpu_layers,

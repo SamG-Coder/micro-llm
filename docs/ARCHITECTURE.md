@@ -126,7 +126,9 @@ llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). `-ngl
 
 48 host DeltaNet layers at 3.2 ms is a 154 ms floor. **DeltaNet must be CUDA.** Host DeltaNet is the proof that 20 tok/s is impossible.
 
-Pin on the card: 16 GA QKVO + all 48 DeltaNet weights + as many FFN as fit under 14 GiB (soft) / 15.2 GiB (hard) + KV + 0.9 scratch + one stream slot. Never all 64 FFN. Embed is CUDA_Host. `lm_head` only at logits. MTP off (`load_mtp` / `keep_mtp` false). `block_count=65` / `nextn_predict_layers=1` is the extra MTP block — hook ring stays 64.
+Pin on the card: 16 GA QKVO + all 48 DeltaNet weights + as many FFN as fit under 14 GiB (soft) / 15.2 GiB (hard) + KV reserved to **20k tokens** + 0.9 scratch + one stream slot. Never all 64 FFN. If nvidia + KV would break 14, cut park, not KV. Embed is CUDA_Host. `lm_head` only at logits. MTP off (`load_mtp` / `keep_mtp` false). `block_count=65` / `nextn_predict_layers=1` is the extra MTP block — hook ring stays 64. Host GGUF gate accepts 64 or 65.
+
+`PERFORMANCE missing_hooks=` is the **run** count of FFN layers whose hook never ran. A streamed FFN with `n_fired=0` is a missing hook, not a prune — keep all 17408. 5080 swap: `tok/s>3.5 AND host_ffn_binds=0 AND missing_hooks=0`.
 
 Unparked FFN live in **CUDA_Host** (pinned, GPU-readable), not CPU ggml. Prefetch layer N+1 while N runs. Host pages pinned.
 

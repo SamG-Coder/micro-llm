@@ -5,6 +5,15 @@
 #include <fstream>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#include <sys/stat.h>
+#else
+#include <sys/stat.h>
+#endif
+
 namespace micro_llm {
 namespace {
 
@@ -561,6 +570,17 @@ bool write_gguf_tensor_dir_stub(const std::string& path, const std::string& arch
         off += t.nbytes != 0 ? t.nbytes : gguf_type_nbytes(t.ggml_type, t.n_elems);
     }
     return static_cast<bool>(os);
+}
+
+bool file_exists(const std::string& path) {
+    // MSVC: 32-bit stat cannot see a 15.3 GiB GGUF (st_size overflow / ENOENT).
+#ifdef _WIN32
+    struct _stat64 st {};
+    return _stat64(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+#else
+    struct stat st {};
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
 }
 
 }  // namespace micro_llm

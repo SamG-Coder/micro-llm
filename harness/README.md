@@ -17,7 +17,9 @@ MIT.
   Identity must not spike.
 - MLPT flags bit1 + `u64 layer_hooked` trailer after vocab (header stays 80B).
   Unwired = `n_tokens>0 && bit unset`. Dead = hooked && all `n_fired==0`.
-  Do not fake `n_fired`.
+  Do not fake `n_fired`. Streamed FFN with `n_fired=0` is a missing hook,
+  not a prune — keep all 17408. `PERFORMANCE missing_hooks=` is the run
+  count. 5080 swap: tok/s>3.5 AND host_ffn_binds=0 AND missing_hooks=0.
 - Serve gate: GGUF KV `micro_llm.serve_ok`. `remnant_may_serve` is true only
   if the key is present and true. False = F16 host dump, refuse.
   Packed FFN keep width must be a multiple of 256 (Q4_K). 13056 and 10496
@@ -101,12 +103,15 @@ Hybrid pin is tensor overrides, not ngl. `n_gpu_layers=0` (CPU default).
 Not `ngl=16` (wrong 16 layers) and not `ngl=99` (parks the file).
 Gated Attention on layers 3,7,...,63 plus **all DeltaNet** stay CUDA
 (host DeltaNet makes >=20 tok/s impossible — measured 3.5 tok/s hour).
-Park as many FFN layers as fit under 14GB. Stream the rest on CUDA_Host
-(not host ggml). Never all 64. MTP off. Hook ring stays 64 even if
-`block_count=65`. Flash-attn on when compute is CUDA (`--no-flash-attn`
-if a build AVs). `op_offload` stays off. `n_batch=512`, `n_ubatch=32`.
-Device fire tap on a private stream; one sync per token. Stderr proof:
-`ffn_cuda_park`, `ffn_cuda_bind`, `tokens/s=`, and the telemetry block.
+Reserve KV for 20k tokens before sitting at 14GB; if nvidia+KV would
+break 14, cut park, not KV. Stream unparked FFN on CUDA_Host (not host
+ggml) with overlapped H2D. Never all 64. MTP off. Hook ring stays 64 even
+if `block_count=65`. Host GGUF gate accepts 64 or 65. Flash-attn on when
+FFN+DeltaNet are CUDA (`--no-flash-attn` if a build AVs). `op_offload`
+stays off. `n_batch=512`, `n_ubatch=32`. Device fire tap on a private
+stream; one sync per token. On MSVC, `file_exists` uses `_stat64` so a
+15.3 GiB GGUF is visible. Stderr proof: `ffn_cuda_park`, `PERFORMANCE`
+(`missing_hooks=` is the run count), `swap_gate`, `tokens/s=`.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
 to the exe). The page is a dark star field: quiet token streaks + dim glyphs,

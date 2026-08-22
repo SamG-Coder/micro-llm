@@ -63,4 +63,8 @@ bool write_gguf_tensor_dir_stub(const std::string& path, const std::string& arch
                                 const std::vector<GgufTensorDirRow>& tensors,
                                 std::string* err = nullptr);
 
+// Regular-file probe. On MSVC this is _stat64 so a 15.3 GiB GGUF is visible
+// (32-bit stat fails on files >= 4 GiB / 2 GiB signed).
+bool file_exists(const std::string& path);
+
 }  // namespace micro_llm

@@ -56,6 +56,10 @@ public:
     uint32_t ffn_gate_hits() const { return ffn_gate_hits_; }
     uint32_t ffn_up_hits() const { return ffn_up_hits_; }
     uint32_t delta_hits() const { return delta_hits_; }
+    // Run total: FFN gate/up activations that arrived on host, not CUDA.
+    uint64_t host_ffn_binds() const { return host_ffn_binds_; }
+    // This token: FFN layers whose hook did not run (no fire tap).
+    uint32_t missing_hooks_this_token() const;
 
 private:
     void maybe_delta(uint32_t layer, const float* hidden_out, uint32_t dim,
@@ -73,6 +77,8 @@ private:
     uint32_t ffn_gate_hits_ = 0;
     uint32_t ffn_up_hits_ = 0;
     uint32_t delta_hits_ = 0;
+    uint64_t host_ffn_binds_ = 0;
+    uint64_t ffn_seen_mask_ = 0;
 };
 
 }  // namespace micro_llm

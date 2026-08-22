@@ -97,7 +97,8 @@ std::string PerfTelemetry::format_report() const {
         "stack=%.2fMiB / 15564.8MiB\n"
         "pcie_model_B/token=%llu  h2d_B/token=%.0f  d2h_B/token=%.0f  sync/token=%.2f\n"
         "trace_us/token=%.1f  ui_push_us/token=%.1f  sample_us/token=%.1f  hook_us/token=%.1f\n"
-        "binds=%llu prefetch=%llu evict=%llu\n"
+        "binds=%llu prefetch=%llu evict=%llu host_ffn_binds=%llu "
+        "missing_hooks=%u missing_hooks_token=%u missing_hooks_scope=run\n"
         "-- model (host hour 3.5 tok/s, this VM did not load the 17GB GGUF) --\n"
         "host_all_cpu_ms=%.1f (%.2f tok/s)\n"
         "park41_ffn_vram_delta_host_ms=%.1f (%.2f tok/s)  << observed: tok/s stayed ~3.5\n"
@@ -117,12 +118,15 @@ std::string PerfTelemetry::format_report() const {
         sync_per_tok, trace_us, ui_us, sample_us, hook_us,
         static_cast<unsigned long long>(snap_.ffn_bind_count),
         static_cast<unsigned long long>(snap_.ffn_prefetch_count),
-        static_cast<unsigned long long>(snap_.ffn_evict_count), b.host_ms, 1000.0 / b.host_ms,
+        static_cast<unsigned long long>(snap_.ffn_evict_count),
+        static_cast<unsigned long long>(snap_.host_ffn_binds), snap_.missing_hooks,
+        snap_.missing_hooks_token, b.host_ms, 1000.0 / b.host_ms,
         b.park_only_ms, 1000.0 / b.park_only_ms, b.ffn_cuda_delta_host_ms,
         1000.0 / b.ffn_cuda_delta_host_ms, b.planned_ms_pcie5, 1000.0 / b.planned_ms_pcie5,
         b.planned_ms_pcie4, 1000.0 / b.planned_ms_pcie4, plan_.twenty_tok_s_possible_pcie5 ? 1 : 0,
         plan_.twenty_tok_s_possible_pcie4 ? 1 : 0, bottleneck_line(snap_, b));
-    return buf;
+    return std::string(buf) + format_performance_line(snap_) + "\n" + format_swap_gate_line(snap_) +
+           "\n";
 }
 
 std::string format_tokens_per_sec_line(double tps, uint32_t n, double elapsed_s) {
@@ -143,6 +147,29 @@ std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked) {
     char buf[128];
     std::snprintf(buf, sizeof(buf), "ffn_cuda_bind layer=%u parked=%d stream=%d", layer,
                   parked ? 1 : 0, parked ? 0 : 1);
+    return buf;
+}
+
+bool swap_gate_ok(double tok_s, uint64_t host_ffn_binds, uint32_t missing_hooks) {
+    return tok_s > kHostHourMeasuredTokS && host_ffn_binds == 0 && missing_hooks == 0;
+}
+
+std::string format_performance_line(const PerfSnapshot& s) {
+    char buf[320];
+    std::snprintf(buf, sizeof(buf),
+                  "PERFORMANCE tok/s=%.2f host_ffn_binds=%llu missing_hooks=%u "
+                  "missing_hooks_token=%u missing_hooks_scope=run",
+                  s.tok_s, static_cast<unsigned long long>(s.host_ffn_binds), s.missing_hooks,
+                  s.missing_hooks_token);
+    return buf;
+}
+
+std::string format_swap_gate_line(const PerfSnapshot& s) {
+    char buf[256];
+    const int ok = swap_gate_ok(s.tok_s, s.host_ffn_binds, s.missing_hooks) ? 1 : 0;
+    std::snprintf(buf, sizeof(buf),
+                  "swap_gate tok/s=%.2f host_ffn_binds=%llu missing_hooks=%u ok=%d", s.tok_s,
+                  static_cast<unsigned long long>(s.host_ffn_binds), s.missing_hooks, ok);
     return buf;
 }
 

@@ -28,6 +28,9 @@ void test_residency_plan(TestContext& ctx) {
     CHECK(ctx, p.n_parked_ffn + p.n_streamed_ffn == kNLayers);
     CHECK(ctx, p.ffn_parked[0]);
     CHECK(ctx, !p.ffn_parked[kNLayers - 1]);
+    CHECK(ctx, p.kv_reserve_tokens == kHourKvReserveTokens);
+    CHECK(ctx, p.kv_bytes == hour_kv_reserve_bytes(8192, true));
+    CHECK(ctx, p.kv_bytes == 20000ull * kKvBytesPerTokenFp8);
     CHECK(ctx, p.card_stack_bytes <= kHourCardSoftBytes);
     CHECK(ctx, p.card_stack_bytes <= kServeUsableBytes);
     CHECK(ctx, p.pcie_bytes_per_token > 0);
@@ -41,6 +44,24 @@ void test_residency_plan(TestContext& ctx) {
     CHECK(ctx, (1000.0 / b.host_ms) > 3.0);
     CHECK(ctx, b.ffn_cuda_delta_host_ms > 50.0);  // 20 tok/s impossible
     CHECK(ctx, (1000.0 / b.ffn_cuda_delta_host_ms) < 20.0);
+
+    const ResidencyPlan ctx32k = plan_residency(cat, 32768, false);
+    CHECK(ctx, ctx32k.kv_reserve_tokens == 32768);
+    CHECK(ctx, ctx32k.kv_bytes == 32768ull * kKvBytesPerTokenFp8);
+
+    WeightCatalog huge = cat;
+    huge.ga_bytes = 8ull * kGiB;
+    huge.deltanet_bytes = 8ull * kGiB;
+    const ResidencyPlan cut_park = plan_residency(huge, 8192, false);
+    CHECK(ctx, cut_park.n_parked_ffn == 0);
+    CHECK(ctx, cut_park.kv_reserve_tokens == kHourKvReserveTokens);
+    CHECK(ctx, cut_park.kv_bytes == 20000ull * kKvBytesPerTokenFp8);
+
+    const ResidencyPlan fp16kv = plan_residency(cat, 8192, false, false);
+    CHECK(ctx, !fp16kv.use_quant_kv);
+    CHECK(ctx, fp16kv.kv_reserve_tokens == kHourKvReserveTokens);
+    CHECK(ctx, fp16kv.kv_bytes == 20000ull * kKvBytesPerTokenFp16);
+    CHECK(ctx, fp16kv.n_parked_ffn < kNLayers);
 
     const ResidencyPlan host_dn = plan_residency(cat, 8192, true);
     CHECK(ctx, !host_dn.pin_deltanet);
@@ -104,11 +125,29 @@ void test_residency_plan(TestContext& ctx) {
     tel.reset();
     tel.apply_plan(p);
     tel.set_generated(256, 10.0);
+    tel.set_hook_counters(0, 3, 2);
+    tel.mark_measured();
     const std::string report = tel.format_report();
     CHECK(ctx, report.find("tok/s=") != std::string::npos);
     CHECK(ctx, report.find("pcie_model_B/token=") != std::string::npos);
     CHECK(ctx, report.find("IMPOSSIBLE if DeltaNet host") != std::string::npos);
+    CHECK(ctx, report.find("missing_hooks=3") != std::string::npos);
+    CHECK(ctx, report.find("missing_hooks_scope=run") != std::string::npos);
+    CHECK(ctx, report.find("PERFORMANCE ") != std::string::npos);
+    CHECK(ctx, report.find("swap_gate ") != std::string::npos);
     CHECK(ctx, format_tokens_per_sec_line(1.5, 8, 5.3).find("tokens/s=") == 0);
     CHECK(ctx, format_ffn_cuda_bind_line(3, true).find("ffn_cuda_bind") == 0);
     CHECK(ctx, format_ffn_cuda_park_line(8, 1000).find("ffn_cuda_park") == 0);
+
+    CHECK(ctx, swap_gate_ok(3.51, 0, 0));
+    CHECK(ctx, !swap_gate_ok(3.5, 0, 0));
+    CHECK(ctx, !swap_gate_ok(20.0, 1, 0));
+    CHECK(ctx, !swap_gate_ok(20.0, 0, 1));
+    const std::string perf = format_performance_line(tel.snap());
+    CHECK(ctx, perf.find("PERFORMANCE ") == 0);
+    CHECK(ctx, perf.find("missing_hooks=3") != std::string::npos);
+    CHECK(ctx, perf.find("host_ffn_binds=0") != std::string::npos);
+    CHECK(ctx, format_swap_gate_line(tel.snap()).find("ok=0") != std::string::npos);
+    tel.set_hook_counters(0, 0, 0);
+    CHECK(ctx, format_swap_gate_line(tel.snap()).find("ok=1") != std::string::npos);
 }

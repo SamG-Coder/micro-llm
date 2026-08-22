@@ -56,7 +56,18 @@ compute          = n_park * 0.35 ms + n_stream * 0.35 ms + 48*0.40 + 16*0.50
 wall             ≈ n_park*0.35 + max(H2D, n_stream*0.35) + 0.3*attn
 ```
 
-The planner parks as many early FFN as the 14 GiB soft card allows after GA+DeltaNet+KV+scratch+one stream slot. Typical default catalog: ~40 parked / ~24 streamed. The exe prints the actual plan from the GGUF **header** (tensor directory only — no 17GB weight load).
+The planner **reserves KV for 20k tokens** (or `--ctx` if larger) **before** parking under 14 GiB. If nvidia + KV would break 14, it cuts park, never the KV reserve. Typical default catalog: ~50 parked / ~14 streamed. The exe prints the actual plan from the GGUF **header** (tensor directory only — no 17GB weight load).
+
+End-of-run `PERFORMANCE` line:
+
+```text
+PERFORMANCE tok/s=… host_ffn_binds=… missing_hooks=… missing_hooks_token=… missing_hooks_scope=run
+swap_gate tok/s=… host_ffn_binds=… missing_hooks=… ok=0|1
+```
+
+`missing_hooks=` is the **run** count of FFN layers whose hook never ran (`n_fired` stayed 0 because the tap did not fire). `missing_hooks_token=` is the same count for the last token. A streamed FFN with `n_fired=0` is a missing hook, not a prune — Export keeps all 17408 channels on those layers.
+
+5080 swap gate: `tok/s>3.5 AND host_ffn_binds=0 AND missing_hooks=0` (`ok=1`). `host_ffn_binds` is the run total of FFN gate/up activations that arrived on host ggml instead of CUDA.
 
 If the 5080 hour still prints `<20 tok/s`, the telemetry `pcie_B/token` and `token_ms` lines are the proof. Do not shrink the model.
 

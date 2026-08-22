@@ -60,6 +60,14 @@ def test_missing_hook_keeps_all_channels_never_kept_zero():
         assert len(kept) == 17408
 
 
+def test_streamed_ffn_n_fired_zero_is_missing_hook_not_prune():
+    # Streamed FFN with n_fired=0: missing hook, keep all 17408. Not a prune.
+    dump = make_mlpt(vocab=[0])
+    assert layer_missing_hook(dump, 63)
+    table = cut_mlpt(dump, ceiling_gb=WIDE)
+    assert table.keep_channels[63] == list(range(17408))
+
+
 def test_protected_layers_still_width_cut_not_dropped():
     dump = make_mlpt(
         channels={(0, 3): (0, 0.0, 0.0), (0, 4): (2, 1.0, 1.0)},

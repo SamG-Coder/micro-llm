@@ -15,19 +15,7 @@
 #include <cstring>
 #include <string>
 
-#ifdef _WIN32
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
-#endif
-#endif
-#include <sys/stat.h>
-
 namespace {
-
-bool file_exists(const std::string& path) {
-    struct stat st {};
-    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
-}
 
 void usage(const char* argv0) {
     std::fprintf(stderr,

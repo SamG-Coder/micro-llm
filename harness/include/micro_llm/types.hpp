@@ -56,6 +56,9 @@ inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  /
 inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
 inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
 inline constexpr uint64_t kDefaultServeCtx = 8192ull;
+// Reserve KV for the hour (20k tokens) before parking FFN under 14 GiB.
+// If nvidia + KV would break 14, cut park, never the KV reserve.
+inline constexpr uint32_t kHourKvReserveTokens = 20000;
 // Host-hour lock: 16 GA + KV already on the card. Not 64 FFNs. The 6.9 GiB
 // figure is the *old* non-FFN bundle (GA + DeltaNet + embed + a KV guess).
 // Intelligent residency splits those so embed/lm_head stay off the card.
@@ -121,6 +124,16 @@ inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
         return false;
     }
     return remnant_serve_allowed(key_present, serve_ok);
+}
+
+inline constexpr uint32_t kv_reserve_tokens_for_ctx(uint32_t n_ctx) {
+    return n_ctx > kHourKvReserveTokens ? n_ctx : kHourKvReserveTokens;
+}
+
+inline constexpr uint64_t hour_kv_reserve_bytes(uint32_t n_ctx = kHourKvReserveTokens,
+                                                bool quant_kv = true) {
+    const uint32_t n = kv_reserve_tokens_for_ctx(n_ctx);
+    return static_cast<uint64_t>(n) * (quant_kv ? kKvBytesPerTokenFp8 : kKvBytesPerTokenFp16);
 }
 
 // Park as many FFN layers as fit under the 14GB soft card:

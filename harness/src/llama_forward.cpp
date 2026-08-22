@@ -162,20 +162,10 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         cat = default_qwen27b_q4km_catalog();
         cat.source = "default-after-header-fail";
     }
-    ResidencyPlan plan = plan_residency(cat, cfg.n_ctx, cfg.force_host_deltanet);
-    if (cfg.n_parked_ffn != 0) {
-        plan.n_parked_ffn = cfg.n_parked_ffn < kNLayers ? cfg.n_parked_ffn : (kNLayers - 1u);
-        for (uint32_t i = 0; i < kNLayers; ++i) {
-            plan.ffn_parked[i] = i < plan.n_parked_ffn;
-        }
-        plan.n_streamed_ffn = kNLayers - plan.n_parked_ffn;
-    }
+    ResidencyPlan plan =
+        plan_residency(cat, cfg.n_ctx, cfg.force_host_deltanet, cfg.use_quant_kv);
     if (cfg.disable_flash_attn) {
         plan.enable_flash_attn = false;
-    }
-    if (!cfg.use_quant_kv) {
-        plan.use_quant_kv = false;
-        plan.kv_bytes = static_cast<uint64_t>(plan.n_ctx) * kKvBytesPerTokenFp16;
     }
 
     auto& tel = PerfTelemetry::thread_local_instance();
@@ -407,7 +397,11 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     tel.mark_measured();
     tel.add_d2h(persistent_cuda_reduce().d2h_bytes());
     tel.add_sync(persistent_cuda_reduce().sync_count());
+    tel.set_hook_counters(session.host_ffn_binds(), hooks.table().count_missing_hooks(),
+                          session.missing_hooks_this_token());
     std::fprintf(stderr, "%s", tel.format_report().c_str());
+    std::fprintf(stderr, "%s\n", format_performance_line(tel.snap()).c_str());
+    std::fprintf(stderr, "%s\n", format_swap_gate_line(tel.snap()).c_str());
 
     streamer.end_session();
     llama_free(ctx);

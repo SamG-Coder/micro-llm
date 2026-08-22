@@ -25,6 +25,15 @@ struct PerfSnapshot {
     uint64_t ffn_bind_count = 0;
     uint64_t ffn_prefetch_count = 0;
     uint64_t ffn_evict_count = 0;
+    // host_ffn_binds: run total of FFN gate/up activations that arrived on host
+    // (ggml CPU), not CUDA / CUDA_Host. Swap gate wants 0.
+    uint64_t host_ffn_binds = 0;
+    // missing_hooks: RUN count of FFN layers whose hook never ran (unwired).
+    // n_fired stayed 0 because the tap did not fire — not a prune.
+    // A streamed FFN with n_fired=0 is a missing hook; keep all 17408.
+    // missing_hooks_token: same count for the last token only.
+    uint32_t missing_hooks = 0;
+    uint32_t missing_hooks_token = 0;
     uint64_t trace_encode_ns = 0;
     uint64_t ui_push_ns = 0;
     uint64_t sample_ns = 0;
@@ -67,6 +76,12 @@ public:
     void set_generated(uint32_t n, double decode_s);
     void set_prefill(uint32_t n, double prefill_s);
     void set_host_pages_pinned(bool v) { snap_.host_pages_pinned = v; }
+    void set_hook_counters(uint64_t host_ffn_binds, uint32_t missing_hooks_run,
+                           uint32_t missing_hooks_token) {
+        snap_.host_ffn_binds = host_ffn_binds;
+        snap_.missing_hooks = missing_hooks_run;
+        snap_.missing_hooks_token = missing_hooks_token;
+    }
     void mark_measured() { snap_.measured = true; }
 
     const PerfSnapshot& snap() const { return snap_; }
@@ -87,5 +102,11 @@ uint64_t now_ns();
 std::string format_tokens_per_sec_line(double tps, uint32_t n, double elapsed_s);
 std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes);
 std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked);
+
+// PERFORMANCE one-liner. missing_hooks is the RUN count (see PerfSnapshot).
+std::string format_performance_line(const PerfSnapshot& s);
+// 5080 swap: tok/s>3.5 AND host_ffn_binds=0 AND missing_hooks=0.
+std::string format_swap_gate_line(const PerfSnapshot& s);
+bool swap_gate_ok(double tok_s, uint64_t host_ffn_binds, uint32_t missing_hooks);
 
 }  // namespace micro_llm

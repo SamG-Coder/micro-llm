@@ -68,7 +68,7 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     auto& tel = PerfTelemetry::thread_local_instance();
     tel.reset();
     tel.apply_plan(plan_residency(default_qwen27b_q4km_catalog(), cfg.n_ctx,
-                                  cfg.force_host_deltanet));
+                                  cfg.force_host_deltanet, cfg.use_quant_kv));
     std::fprintf(stderr, "%s\n",
                  format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes)
                      .c_str());
@@ -119,8 +119,11 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const double tps = elapsed > 0.0 ? static_cast<double>(n) / elapsed : 0.0;
     tel.set_generated(n, elapsed);
+    tel.set_hook_counters(0, hooks.table().count_missing_hooks(), 0);
     std::fprintf(stderr, "%s\n", format_tokens_per_sec_line(tps, n, elapsed).c_str());
     std::fprintf(stderr, "%s", tel.format_report().c_str());
+    std::fprintf(stderr, "%s\n", format_performance_line(tel.snap()).c_str());
+    std::fprintf(stderr, "%s\n", format_swap_gate_line(tel.snap()).c_str());
     if (cfg.on_stats) {
         cfg.on_stats(tps, n);
     }

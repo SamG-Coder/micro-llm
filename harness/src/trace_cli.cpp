@@ -33,7 +33,9 @@ int32_t clamp_hybrid_n_gpu_layers(int32_t n) {
     return n;
 }
 
-uint32_t hybrid_ffn_park_layers() { return ffn_park_layers_that_fit(); }
+uint32_t hybrid_ffn_park_layers() {
+    return plan_residency(default_qwen27b_q4km_catalog(), kDefaultServeCtx).n_parked_ffn;
+}
 
 std::vector<std::string> hybrid_cpu_tensor_regexes() {
     return residency_cpu_regexes(plan_residency(default_qwen27b_q4km_catalog(), kDefaultServeCtx));
@@ -80,7 +82,7 @@ TraceCliArgs parse_trace_cli(int argc, char** argv) {
     out.cfg.disable_op_offload = true;
     out.cfg.load_mtp = false;
     out.cfg.pack_checkpoint = false;
-    out.cfg.n_parked_ffn = hybrid_ffn_park_layers();
+    out.cfg.n_parked_ffn = 0;
     out.cfg.use_quant_kv = true;
 
     for (int i = 1; i < argc; ++i) {
@@ -132,6 +134,12 @@ TraceCliArgs parse_trace_cli(int argc, char** argv) {
     out.cfg.n_predict =
         resolve_n_predict(!out.cfg.model_path.empty(), out.n_predict_set, out.cfg.n_predict);
     out.cfg.n_gpu_layers = clamp_hybrid_n_gpu_layers(out.cfg.n_gpu_layers);
+    if (out.cfg.n_parked_ffn == 0) {
+        out.cfg.n_parked_ffn =
+            plan_residency(default_qwen27b_q4km_catalog(), out.cfg.n_ctx, false,
+                           out.cfg.use_quant_kv)
+                .n_parked_ffn;
+    }
     return out;
 }
 

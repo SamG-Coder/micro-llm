@@ -69,6 +69,7 @@ struct ResidencyPlan {
     uint64_t cuda_host_bytes = 0;
     uint64_t cpu_bytes = 0;
     uint64_t kv_bytes = 0;
+    uint32_t kv_reserve_tokens = kHourKvReserveTokens;  // 20k before sitting at 14GB
     uint64_t scratch_bytes = kCudaScratchBytes;
     uint64_t stream_slot_bytes = kQ4FfnLayerBytes;
     uint64_t card_stack_bytes = 0;
@@ -97,7 +98,7 @@ int32_t layer_from_tensor_name(const std::string& name);
 uint64_t gguf_type_nbytes(uint32_t ggml_type, uint64_t n_elems);
 
 ResidencyPlan plan_residency(const WeightCatalog& cat, uint32_t n_ctx,
-                             bool force_host_deltanet = false);
+                             bool force_host_deltanet = false, bool use_quant_kv = true);
 
 // First-match-wins llama.cpp tensor_buft_overrides.
 std::vector<std::string> residency_vram_regexes(const ResidencyPlan& plan);

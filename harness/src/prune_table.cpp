@@ -195,6 +195,16 @@ bool PruneTable::layer_is_dead(uint32_t layer) const {
     return true;
 }
 
+uint32_t PruneTable::count_missing_hooks() const {
+    uint32_t n = 0;
+    for (uint32_t layer = 0; layer < kNLayers; ++layer) {
+        if (layer_is_unwired(layer)) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 bool PruneTable::operator==(const PruneTable& o) const {
     if (fire_eps != o.fire_eps || spike_eps != o.spike_eps || n_tokens != o.n_tokens ||
         flags != o.flags || layer_hooked_ != o.layer_hooked_) {

@@ -58,6 +58,8 @@ void test_graph_hook_names(TestContext& ctx) {
     CHECK(ctx, hooks.table().channel(2, 10).n_fired == 1);
     CHECK(ctx, sess.ffn_gate_hits() == 1);
     CHECK(ctx, sess.ffn_up_hits() == 1);
+    CHECK(ctx, sess.host_ffn_binds() == 2);  // gate + up on host
+    CHECK(ctx, sess.missing_hooks_this_token() == 63);
 
     std::vector<float> hin(kHiddenDim, 1.f);
     std::vector<float> hout(kHiddenDim, 1.f);
