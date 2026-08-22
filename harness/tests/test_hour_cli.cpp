@@ -43,7 +43,7 @@ void test_hour_cli_resolve(TestContext& ctx) {
     }
     CHECK(ctx, has_ga);
     CHECK(ctx, gpu_has_ffn);  // parked FFN on CUDA, not ngl=99 of the whole file
-    CHECK(ctx, !gpu_has_qkv);
+    CHECK(ctx, gpu_has_qkv);  // DeltaNet on CUDA — proven required for 20 tok/s
     const auto gpu_park = hybrid_gpu_tensor_regexes(hybrid_ffn_park_layers());
     bool gpu_parks_ffn = false;
     for (const auto& p : gpu_park) {
@@ -88,7 +88,7 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, a2.cfg.n_ubatch == 32);
     CHECK(ctx, a2.cfg.checkpoint_every == 2000);
     CHECK(ctx, a2.cfg.continue_after_eos);
-    CHECK(ctx, a2.cfg.disable_flash_attn);
+    CHECK(ctx, !a2.cfg.disable_flash_attn);  // FA on when FFN+DeltaNet are CUDA
     CHECK(ctx, a2.cfg.disable_op_offload);
     CHECK(ctx, !a2.cfg.load_mtp);
     CHECK(ctx, !a2.cfg.pack_checkpoint);

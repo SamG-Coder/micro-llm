@@ -1,4 +1,5 @@
 #include "micro_llm/gguf_meta.hpp"
+#include "micro_llm/residency.hpp"
 
 #include <cstring>
 #include <fstream>
@@ -303,23 +304,26 @@ bool read_gguf_meta(const std::string& path, GgufKv& out, std::string* err) {
         }
     }
 
-    for (uint64_t t = 0; t < out.n_tensors && t < 4096; ++t) {
+    for (uint64_t t = 0; t < out.n_tensors && t < 8192; ++t) {
         std::string name;
         uint32_t n_dims = 0;
         if (!read_string(is, name) || !read_u32(is, n_dims)) {
             break;
         }
+        uint64_t n_elems = 1;
         for (uint32_t d = 0; d < n_dims; ++d) {
             uint64_t dim = 0;
             if (!read_u64(is, dim)) {
                 break;
             }
+            n_elems *= dim == 0 ? 1 : dim;
         }
         uint32_t ttype = 0;
         uint64_t off = 0;
         if (!read_u32(is, ttype) || !read_u64(is, off)) {
             break;
         }
+        (void)n_elems;
         if (is_vision_tensor_name(name)) {
             out.has_vision_tensors = true;
         }
@@ -358,6 +362,92 @@ bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m) {
     }
     const uint32_t hooks = gguf_hook_layer_count(m);
     return arch_ok || (hooks == kNLayers && m.n_embd == kHiddenDim);
+}
+
+namespace {
+
+bool skip_to_tensor_dir(std::istream& is, uint64_t n_kv) {
+    for (uint64_t i = 0; i < n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_string(is, key) || !read_u32(is, type)) {
+            return false;
+        }
+        if (!skip_value(is, type)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool read_gguf_tensor_dir(const std::string& path, std::vector<GgufTensorDirRow>& out,
+                          std::string* err) {
+    out.clear();
+    std::ifstream is(path, std::ios::binary);
+    if (!is) {
+        if (err) {
+            *err = "failed to open GGUF";
+        }
+        return false;
+    }
+    char magic[4];
+    if (!read_exact(is, magic, 4) || std::memcmp(magic, "GGUF", 4) != 0) {
+        if (err) {
+            *err = "not a GGUF (bad magic)";
+        }
+        return false;
+    }
+    uint32_t version = 0;
+    uint64_t n_tensors = 0, n_kv = 0;
+    if (!read_u32(is, version) || version < 2 || version > 3 || !read_u64(is, n_tensors) ||
+        !read_u64(is, n_kv)) {
+        if (err) {
+            *err = "truncated GGUF header";
+        }
+        return false;
+    }
+    if (!skip_to_tensor_dir(is, n_kv)) {
+        if (err) {
+            *err = "truncated GGUF KV";
+        }
+        return false;
+    }
+    out.reserve(static_cast<size_t>(n_tensors > 4096 ? 4096 : n_tensors));
+    for (uint64_t t = 0; t < n_tensors && t < 8192; ++t) {
+        GgufTensorDirRow row;
+        uint32_t n_dims = 0;
+        if (!read_string(is, row.name) || !read_u32(is, n_dims)) {
+            if (err) {
+                *err = "truncated GGUF tensor dir";
+            }
+            return false;
+        }
+        uint64_t n_elems = 1;
+        for (uint32_t d = 0; d < n_dims; ++d) {
+            uint64_t dim = 0;
+            if (!read_u64(is, dim)) {
+                if (err) {
+                    *err = "truncated GGUF tensor dim";
+                }
+                return false;
+            }
+            n_elems *= dim == 0 ? 1 : dim;
+        }
+        uint64_t offset = 0;
+        if (!read_u32(is, row.ggml_type) || !read_u64(is, offset)) {
+            if (err) {
+                *err = "truncated GGUF tensor type";
+            }
+            return false;
+        }
+        (void)offset;
+        row.n_elems = n_elems;
+        row.nbytes = gguf_type_nbytes(row.ggml_type, n_elems);
+        out.push_back(std::move(row));
+    }
+    return true;
 }
 
 bool write_gguf_kv_stub(const std::string& path, const std::string& architecture,
@@ -432,6 +522,45 @@ bool write_gguf_kv_stub(const std::string& path, const std::string& architecture
         return false;
     }
     return true;
+}
+
+bool write_gguf_tensor_dir_stub(const std::string& path, const std::string& architecture,
+                                const std::vector<GgufTensorDirRow>& tensors, std::string* err) {
+    std::ofstream os(path, std::ios::binary);
+    if (!os) {
+        if (err) {
+            *err = "failed to write tensor-dir stub GGUF";
+        }
+        return false;
+    }
+    const std::string prefix = architecture + ".";
+    os.write("GGUF", 4);
+    write_u32(os, 3);
+    write_u64(os, tensors.size());
+    write_u64(os, 4);
+    write_string(os, "general.architecture");
+    write_u32(os, static_cast<uint32_t>(GgufType::STRING));
+    write_string(os, architecture);
+    write_string(os, prefix + "block_count");
+    write_u32(os, static_cast<uint32_t>(GgufType::UINT32));
+    write_u32(os, kNLayers);
+    write_string(os, prefix + "embedding_length");
+    write_u32(os, static_cast<uint32_t>(GgufType::UINT32));
+    write_u32(os, kHiddenDim);
+    write_string(os, prefix + "feed_forward_length");
+    write_u32(os, static_cast<uint32_t>(GgufType::UINT32));
+    write_u32(os, kFfnIntermediate);
+    uint64_t off = 0;
+    for (const auto& t : tensors) {
+        write_string(os, t.name);
+        write_u32(os, 2);          // n_dims
+        write_u64(os, t.n_elems);  // dim0
+        write_u64(os, 1);          // dim1
+        write_u32(os, t.ggml_type);
+        write_u64(os, off);
+        off += t.nbytes != 0 ? t.nbytes : gguf_type_nbytes(t.ggml_type, t.n_elems);
+    }
+    return static_cast<bool>(os);
 }
 
 }  // namespace micro_llm

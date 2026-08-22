@@ -42,6 +42,14 @@ public:
     int reduce_device(const float* d_gate, const float* d_up, float* abs_out,
                       uint8_t* fired_bits, uint32_t n_channels, float eps);
 
+    // Async: launch on a private stream. No device-wide sync. Call
+    // sync_stream() once per token before reading host outputs.
+    int reduce_device_async(const float* d_gate, const float* d_up, float* abs_out,
+                            uint8_t* fired_bits, uint32_t n_channels, float eps);
+    bool sync_stream();
+    uint64_t d2h_bytes() const { return d2h_bytes_; }
+    uint64_t sync_count() const { return sync_count_; }
+
     // Host activations: persistent device scratch (not per-token malloc).
     int reduce_host(const float* gate, const float* up, float* abs_out,
                     uint8_t* fired_bits, uint32_t n_channels, float eps);
@@ -52,7 +60,10 @@ private:
     void* d_nf_ = nullptr;
     void* d_gate_scratch_ = nullptr;
     void* d_up_scratch_ = nullptr;
+    void* stream_ = nullptr;  // cudaStream_t
     uint32_t cap_ = 0;
+    uint64_t d2h_bytes_ = 0;
+    uint64_t sync_count_ = 0;
 };
 
 CudaReduceContext& persistent_cuda_reduce();

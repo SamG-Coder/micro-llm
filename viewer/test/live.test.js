@@ -65,6 +65,8 @@ describe("live attach", () => {
     assert.equal(typeof listeners.sharedbufferreceived, "function");
     g.__htr1Push({ type: "live-attach" });
     assert.equal(seen[0], "attach");
+    g.__htr1Push({ type: "live-stats", tokensPerSec: 21.5, nTokens: 64 });
+    assert.equal(seen[1], "stats");
   });
 });
 

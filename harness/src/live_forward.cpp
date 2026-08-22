@@ -3,6 +3,8 @@
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/graph_hooks.hpp"
 #include "micro_llm/hook_ring.hpp"
+#include "micro_llm/perf_telemetry.hpp"
+#include "micro_llm/residency.hpp"
 #include "micro_llm/trace_cli.hpp"
 
 #include <chrono>
@@ -63,9 +65,12 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     const uint32_t n_park =
         cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ffn_park_layers_that_fit();
     streamer.set_n_parked_ffn(n_park);
+    auto& tel = PerfTelemetry::thread_local_instance();
+    tel.reset();
+    tel.apply_plan(plan_residency(default_qwen27b_q4km_catalog(), cfg.n_ctx,
+                                  cfg.force_host_deltanet));
     std::fprintf(stderr, "%s\n",
-                 format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) *
-                                                       kQ4FfnLayerBytes)
+                 format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes)
                      .c_str());
     const auto t0 = std::chrono::steady_clock::now();
     streamer.begin_session();
@@ -113,7 +118,9 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     const double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     const double tps = elapsed > 0.0 ? static_cast<double>(n) / elapsed : 0.0;
+    tel.set_generated(n, elapsed);
     std::fprintf(stderr, "%s\n", format_tokens_per_sec_line(tps, n, elapsed).c_str());
+    std::fprintf(stderr, "%s", tel.format_report().c_str());
     if (cfg.on_stats) {
         cfg.on_stats(tps, n);
     }

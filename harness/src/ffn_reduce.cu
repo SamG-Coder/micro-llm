@@ -90,10 +90,20 @@ bool CudaReduceContext::ensure(uint32_t n_channels) {
     d_gate_scratch_ = gscratch;
     d_up_scratch_ = uscratch;
     cap_ = n_channels;
+    if (!stream_) {
+        cudaStream_t st = nullptr;
+        if (cudaStreamCreateWithFlags(&st, cudaStreamNonBlocking) == cudaSuccess) {
+            stream_ = st;
+        }
+    }
     return true;
 }
 
 void CudaReduceContext::release() {
+    if (stream_) {
+        cudaStreamDestroy(static_cast<cudaStream_t>(stream_));
+        stream_ = nullptr;
+    }
     cuda_free_ptr(d_abs_);
     cuda_free_ptr(d_bits_);
     cuda_free_ptr(d_nf_);
@@ -102,36 +112,59 @@ void CudaReduceContext::release() {
     cap_ = 0;
 }
 
-int CudaReduceContext::reduce_device(const float* d_gate, const float* d_up,
-                                     float* abs_out, uint8_t* fired_bits,
-                                     uint32_t n_channels, float eps) {
+int CudaReduceContext::reduce_device_async(const float* d_gate, const float* d_up,
+                                           float* abs_out, uint8_t* fired_bits,
+                                           uint32_t n_channels, float eps) {
     if (!d_gate || !d_up || !abs_out || n_channels == 0) {
         return -1;
     }
     if (!ensure(n_channels)) {
         return -1;
     }
+    cudaStream_t st = static_cast<cudaStream_t>(stream_);
     const size_t fbytes = sizeof(float) * n_channels;
     const size_t bbytes = (static_cast<size_t>(n_channels) + 7u) / 8u;
-    cudaMemset(d_nf_, 0, sizeof(unsigned int));
+    cudaMemsetAsync(d_nf_, 0, sizeof(unsigned int), st);
     if (fired_bits) {
-        cudaMemset(d_bits_, 0, bbytes);
+        cudaMemsetAsync(d_bits_, 0, bbytes, st);
     }
     const int threads = 128;
     const int blocks = static_cast<int>((n_channels + threads - 1u) / threads);
-    ffn_reduce_token_kernel<<<blocks, threads>>>(
+    ffn_reduce_token_kernel<<<blocks, threads, 0, st>>>(
         d_gate, d_up, static_cast<float*>(d_abs_),
         fired_bits ? static_cast<uint8_t*>(d_bits_) : nullptr, n_channels, eps,
         static_cast<unsigned int*>(d_nf_));
-    if (cudaDeviceSynchronize() != cudaSuccess) {
+    cudaMemcpyAsync(abs_out, d_abs_, fbytes, cudaMemcpyDeviceToHost, st);
+    d2h_bytes_ += fbytes;
+    if (fired_bits) {
+        cudaMemcpyAsync(fired_bits, d_bits_, bbytes, cudaMemcpyDeviceToHost, st);
+        d2h_bytes_ += bbytes;
+    }
+    // n_fired is read in sync_stream / reduce_device. Stash on host after sync.
+    return 0;
+}
+
+bool CudaReduceContext::sync_stream() {
+    if (!stream_) {
+        return false;
+    }
+    ++sync_count_;
+    return cudaStreamSynchronize(static_cast<cudaStream_t>(stream_)) == cudaSuccess;
+}
+
+int CudaReduceContext::reduce_device(const float* d_gate, const float* d_up,
+                                     float* abs_out, uint8_t* fired_bits,
+                                     uint32_t n_channels, float eps) {
+    const int rc = reduce_device_async(d_gate, d_up, abs_out, fired_bits, n_channels, eps);
+    if (rc < 0) {
         return -1;
     }
-    cudaMemcpy(abs_out, d_abs_, fbytes, cudaMemcpyDeviceToHost);
+    if (!sync_stream()) {
+        return -1;
+    }
     unsigned int nf = 0;
     cudaMemcpy(&nf, d_nf_, sizeof(nf), cudaMemcpyDeviceToHost);
-    if (fired_bits) {
-        cudaMemcpy(fired_bits, d_bits_, bbytes, cudaMemcpyDeviceToHost);
-    }
+    d2h_bytes_ += sizeof(nf);
     return static_cast<int>(nf);
 }
 

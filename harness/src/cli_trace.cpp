@@ -1,8 +1,11 @@
+#include "micro_llm/async_ring.hpp"
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/hotspot_ui.hpp"
 #include "micro_llm/hook_ring.hpp"
 #include "micro_llm/live_forward.hpp"
 #include "micro_llm/micro_llm.hpp"
+#include "micro_llm/perf_telemetry.hpp"
+#include "micro_llm/residency.hpp"
 #include "micro_llm/serve.hpp"
 #include "micro_llm/trace_cli.hpp"
 
@@ -42,6 +45,9 @@ void usage(const char* argv0) {
                  "  --out           MLPT path (default prune_table.bin). Checkpoint every 2000.\n"
                  "  --n-predict     Tokens to generate (default 64 in tests; 20000 with --model).\n"
                  "  --stub          Tests only. Synthetic hooks, no GGUF.\n"
+                 "  --no-flash-attn Disable FA (use if FA AVs on this llama.cpp).\n"
+                 "  --host-deltanet Debug: leave DeltaNet on host (makes 20 tok/s impossible).\n"
+                 "  --no-quant-kv   FP16 KV (default is Q8/FP8-sized plan).\n"
                  "  --check-serve PATH  Print remnant_may_serve for a remnant GGUF and exit.\n",
                  argv0);
 }
@@ -50,25 +56,35 @@ int run_hour(micro_llm::LiveForwardConfig cfg, bool use_stub, bool push_ui) {
     using namespace micro_llm;
     cfg.abort = &hotspot_live_abort();
     if (push_ui) {
-        const uint64_t ga = pinned_ga_weight_bytes();
-        const uint64_t ffn_ws = streamed_ffn_workspace_bytes();
         const uint32_t n_park = cfg.n_parked_ffn ? cfg.n_parked_ffn : hybrid_ffn_park_layers();
+        const uint64_t ga = pinned_ga_weight_bytes();
         const std::string attach =
             std::string("{\"type\":\"live-attach\",\"title\":\"live hour\",") +
             "\"weightBytes\":" + std::to_string(ga) +
             ",\"cudaBytes\":" + std::to_string(kCudaScratchBytes) +
-            ",\"ffnWorkspaceBytes\":" + std::to_string(ffn_ws) +
+            ",\"ffnWorkspaceBytes\":" + std::to_string(streamed_ffn_workspace_bytes()) +
             ",\"ffnParkedBytes\":" +
             std::to_string(static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes) +
             ",\"nParkedFfn\":" + std::to_string(n_park) +
             ",\"pinnedGaKvBytes\":" + std::to_string(pinned_ga_kv_bytes()) +
-            ",\"kvBytesPerToken\":" + std::to_string(kKvBytesPerTokenFp16) +
+            ",\"kvBytesPerToken\":" + std::to_string(kKvBytesPerTokenFp8) +
             ",\"ctx\":" + std::to_string(cfg.n_ctx) +
             ",\"nPredict\":" + std::to_string(cfg.n_predict) +
             ",\"streamFfn\":true,\"nGpuLayers\":0,\"loadMtp\":false}";
         hotspot_live_push_json(attach);
-        cfg.on_htr1 = [](const uint8_t* rec, size_t n) { hotspot_live_push_htr1(rec, n); };
+        cfg.on_htr1 = [](const uint8_t* rec, size_t n) {
+            // Token path: lock-free ring only. UI drains at 30-60 Hz.
+            const uint64_t t0 = now_ns();
+            if (rec && n >= kHtr1RecordBytes) {
+                AsyncHtr1Ring::live().try_push(rec);
+            }
+            hotspot_live_push_htr1(rec, n);
+            PerfTelemetry::thread_local_instance().snap().ui_push_ns += now_ns() - t0;
+        };
         cfg.on_stats = [](double tps, uint32_t ntok) {
+            LiveStatsAtomics::live().n_tokens.store(ntok, std::memory_order_relaxed);
+            LiveStatsAtomics::live().tok_s_milli.store(static_cast<uint32_t>(tps * 1000.0),
+                                                       std::memory_order_relaxed);
             char buf[192];
             std::snprintf(buf, sizeof(buf),
                           "{\"type\":\"live-stats\",\"tokensPerSec\":%.3f,\"nTokens\":%u}", tps,

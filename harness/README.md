@@ -99,15 +99,14 @@ written to `<out>.tmp` and atomically renamed to `<out>` (no mid-run pack).
 
 Hybrid pin is tensor overrides, not ngl. `n_gpu_layers=0` (CPU default).
 Not `ngl=16` (wrong 16 layers) and not `ngl=99` (parks the file).
-Gated Attention on layers 3,7,...,63 plus KV stay CUDA. Park as many FFN
-layers as fit under 14GB (GA+KV ~6.9 + 0.9 + parked + one stream slot).
-Never all 64. Stream the rest one layer at a time. DeltaNet stays host.
-MTP off. `block_count=65` / `nextn_predict_layers=1` is the extra MTP
-block — hook ring stays 64. Flash-attn stays off. `op_offload` does not
-move FFN compute (30328). `n_batch=512`, `n_ubatch=32`. Device fire tap
-on live CUDA gate/up; do not dequant the layer to host just to score it.
-Stderr proof: `ffn_cuda_park`, `ffn_cuda_bind`, `tokens/s=`. Hotspot
-shows tok/s. Checkpoint is the ~18MB MLPT; do not pack it.
+Gated Attention on layers 3,7,...,63 plus **all DeltaNet** stay CUDA
+(host DeltaNet makes >=20 tok/s impossible — measured 3.5 tok/s hour).
+Park as many FFN layers as fit under 14GB. Stream the rest on CUDA_Host
+(not host ggml). Never all 64. MTP off. Hook ring stays 64 even if
+`block_count=65`. Flash-attn on when compute is CUDA (`--no-flash-attn`
+if a build AVs). `op_offload` stays off. `n_batch=512`, `n_ubatch=32`.
+Device fire tap on a private stream; one sync per token. Stderr proof:
+`ffn_cuda_park`, `ffn_cuda_bind`, `tokens/s=`, and the telemetry block.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
 to the exe). The page is a dark star field: quiet token streaks + dim glyphs,
@@ -157,10 +156,10 @@ cmake -S harness -B harness/build \
 cmake --build harness/build -j
 ```
 
-3. Run the hour. Hybrid pin: ngl=0, 16 GA + KV on CUDA, as many FFN
-   layers as fit parked on CUDA, unparked FFN streamed one at a time.
-   Window opens on Windows. Decode is on a worker thread. Look for
-   `ffn_cuda_park` / `ffn_cuda_bind` / `tokens/s=` on stderr.
+3. Run the hour. Hybrid pin: ngl=0, 16 GA + DeltaNet + parked FFN on CUDA,
+   unparked FFN on CUDA_Host. Window opens on Windows. Decode is on a
+   worker thread. Look for `ffn_cuda_park` / `tokens/s=` / the telemetry
+   block on stderr. See docs/TRACE_PERF.md.
 
 ```bash
 ./harness/build/micro-llm-trace \
@@ -204,8 +203,8 @@ floor) are valid; 10445 is not.
 Verified: llama.cpp `llama_context_params.cb_eval`
 (`ggml_backend_sched_eval_callback`) after each graph node. `qwen35.cpp`
 names the sites we need (`ffn_gate-L`, `ffn_up-L`, `attn_residual-L`,
-`result_output`). After each FFN: device hook on gate/up while that layer's workspace is
-on the card, then evict. After each
+`result_output`). After each FFN: device hook on gate/up while that
+layer's workspace is on the card, then evict unparked FFN. After each
 DeltaNet pack: relative residual. Vocab: prompt, sampled, top-k.
 `after_logits` for the floor bitset.
 

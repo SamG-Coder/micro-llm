@@ -26,9 +26,6 @@ inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
-// Host ping-pong is two scratch buffers. VRAM stream slot is ONE FFN.
-// Parked FFN layers are a separate resident set (never all 64).
-inline constexpr uint32_t kMaxResidentFfnLayers = 1;
 inline constexpr uint32_t kFloorBitsetBytes =
     (kNLayers * kFfnIntermediate) / 8u;                  // 139264 ~ 140KB
 inline constexpr uint32_t kVocabBitsetBytes = (kVocabSize + 7u) / 8u;
@@ -59,12 +56,29 @@ inline constexpr uint64_t kServeUsableDisplayBytes = (145ull * kGiB) / 10ull;  /
 inline constexpr uint64_t kKvBytesPerTokenFp16 = 65536ull;
 inline constexpr uint64_t kKvBytesPerTokenFp8 = 32768ull;
 inline constexpr uint64_t kDefaultServeCtx = 8192ull;
-// Bob/Dave/Bruce lock: pinned 16 GA + KV already on the 5080. Not 64 FFNs.
-inline constexpr uint64_t kPinnedGaKvBytes = (69ull * kGiB) / 10ull;  // 6.9 GiB
-inline constexpr uint64_t kHourCardSoftBytes = 14ull * kGiB;          // park under 14
-// Extra GGUF block (block_count=65, nextn_predict_layers=1) is MTP. Not in
-// the 64-layer hook ring and not in the card stack.
+// Host-hour lock: 16 GA + KV already on the card. Not 64 FFNs. The 6.9 GiB
+// figure is the *old* non-FFN bundle (GA + DeltaNet + embed + a KV guess).
+// Intelligent residency splits those so embed/lm_head stay off the card.
+inline constexpr uint64_t kPinnedGaWeightBytes = (6ull * kGiB) / 10ull;  // 0.6 GiB
+inline constexpr uint64_t kPinnedGaKvBytes = (69ull * kGiB) / 10ull;      // 6.9 GiB (legacy bundle)
+inline constexpr uint64_t kHourCardSoftBytes = 14ull * kGiB;              // park under 14
 inline constexpr uint32_t kMtpExtraBlocks = 1;
+// One VRAM stream slot. Parked FFN layers are a separate resident set.
+inline constexpr uint32_t kMaxResidentFfnLayers = 1;
+inline constexpr uint32_t kFfnStreamSlots = 2;  // host ping-pong / prefetch depth
+
+// Fitted to the 5080 host hour (3.5 tok/s, park-41 did not move tok/s).
+// 23 host FFN * 5.3 ms + 48 host DeltaNet * 3.2 ms + 16*0.5 + 64*0.08 sync
+// = 289 ms = 3.46 tok/s. That is the proof DeltaNet cannot stay on the host.
+inline constexpr double kHostHourMeasuredTokS = 3.5;
+inline constexpr double kCpuQ4FfnMs = 5.3;
+inline constexpr double kGpuQ4FfnMs = 0.35;   // 5080 Q4_K GEMM, ~0.3-0.5 ms
+inline constexpr double kCpuDeltaNetMs = 3.2;
+inline constexpr double kGpuDeltaNetMs = 0.40;
+inline constexpr double kGpuGatedAttnMs = 0.50;
+inline constexpr double kLegacySyncPerLayerMs = 0.08;  // cudaDeviceSynchronize + 70KB D2H
+inline constexpr double kPcie5GBps = 64.0;
+inline constexpr double kPcie4GBps = 32.0;
 
 // Refuse unless serve_ok is present and true. Then refuse if
 // file_size + cuda_scratch + kv_bytes_per_token * ctx > usable (15.2 GiB default).
@@ -93,8 +107,24 @@ inline constexpr bool remnant_serve_allowed(
     return kv <= (after_w - cuda_scratch);
 }
 
+// FFN keep width must be a multiple of 256 (Q4_K superblock).
+// 13056 and 10496 are valid; 10445 is not.
+inline constexpr bool ffn_keep_width_q4k_ok(uint32_t n) {
+    return n != 0 && (n % kQ4KSuperblock) == 0;
+}
+
+// Preferred name. True only if the KV is present AND true. False = F16 host dump, refuse.
+// Packed FFN intermediate, when known (ffn_keep != 0), must be a Q4_K multiple of 256.
+inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
+                                        uint32_t ffn_keep = 0) {
+    if (ffn_keep != 0 && !ffn_keep_width_q4k_ok(ffn_keep)) {
+        return false;
+    }
+    return remnant_serve_allowed(key_present, serve_ok);
+}
+
 // Park as many FFN layers as fit under the 14GB soft card:
-// GA+KV + 0.9 + parked FFN + one stream slot. Never all 64. 15.2 is hard.
+// pinned_non_ffn + 0.9 + parked FFN + one stream slot. Never all 64. 15.2 is hard.
 inline constexpr uint32_t ffn_park_layers_that_fit(
     uint64_t card = kHourCardSoftBytes,
     uint64_t pinned = kPinnedGaKvBytes,
@@ -121,7 +151,6 @@ inline constexpr bool hour_park_stream_fits(uint32_t n_park) {
     return n_park < kNLayers && stack <= kHourCardSoftBytes && stack <= kServeUsableBytes;
 }
 
-// Stream-only (no parked FFN): 6.9 + 0.9 + one workspace.
 inline constexpr uint64_t streamed_hour_card_bytes(
     uint64_t ffn_workspace = kQ4FfnLayerBytes,
     uint64_t pinned = kPinnedGaKvBytes,
@@ -154,22 +183,6 @@ inline constexpr uint32_t hook_layer_count_from_blocks(uint32_t block_count) {
         return kNLayers;
     }
     return block_count;
-}
-
-// FFN keep width must be a multiple of 256 (Q4_K superblock).
-// 13056 and 10496 are valid; 10445 is not.
-inline constexpr bool ffn_keep_width_q4k_ok(uint32_t n) {
-    return n != 0 && (n % kQ4KSuperblock) == 0;
-}
-
-// Preferred name. True only if the KV is present AND true. False = F16 host dump, refuse.
-// Packed FFN intermediate, when known (ffn_keep != 0), must be a Q4_K multiple of 256.
-inline constexpr bool remnant_may_serve(bool key_present, bool serve_ok,
-                                        uint32_t ffn_keep = 0) {
-    if (ffn_keep != 0 && !ffn_keep_width_q4k_ok(ffn_keep)) {
-        return false;
-    }
-    return remnant_serve_allowed(key_present, serve_ok);
 }
 
 // r = ||out-in||_2 / (||in||_2 + 1e-12). Identity => 0.

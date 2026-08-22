@@ -13,3 +13,6 @@
 #include "micro_llm/hook_ring.hpp"
 #include "micro_llm/live_forward.hpp"
 #include "micro_llm/trace_cli.hpp"
+#include "micro_llm/residency.hpp"
+#include "micro_llm/perf_telemetry.hpp"
+#include "micro_llm/async_ring.hpp"

@@ -85,7 +85,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, cfg.n_gpu_layers != 16);
     CHECK(ctx, cfg.n_gpu_layers != 99);
     CHECK(ctx, !cfg.load_mtp);
-    CHECK(ctx, cfg.disable_flash_attn);
+    CHECK(ctx, !cfg.disable_flash_attn);  // FA on when FFN+DeltaNet are CUDA
     CHECK(ctx, cfg.disable_op_offload);
     CHECK(ctx, !cfg.pack_checkpoint);
 }
