@@ -111,6 +111,34 @@ The 15.2GB RTX 5080 gate is the serve stack, not a second cut ceiling: remnant f
 
 Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
+## Hybrid CUDA hour (pin, don't ngl)
+
+llama.cpp `-ngl 16` is the wrong 16. That is the first 16 layers (12 DeltaNet + 4 Gated Attention). We do not use it.
+
+The current hour (PID 7920) is CPU-only. This section is the next attach after the CUDA build. Do not call that running hour hybrid.
+
+Pin on the 5080:
+
+- All 16 Gated Attention blocks (QKVO + the 4 KV heads)
+- KV cache (grows with ctx)
+- CUDA context + decode scratch ~0.9GB
+- Embed (resident). lm_head only at logits. Do not pin it next to embed.
+- DeltaNet state (small, stays with the packs that run)
+
+Stream FFNs from host (15.3GB UD-Q4_K_M source). Double-buffer: two Q4 FFN scratch buffers, peak ~300MB, not 150. Prefetch n+1 while n computes. Host pages must be pinned or the copy does not overlap.
+
+Card budget for this hybrid TRACE (not the serve remnant):
+
+- 16 GA weights ~0.6GB Q4
+- embed ~0.6-1.0GB Q4
+- FFN scratch 0.3GB
+- CUDA 0.9GB
+- KV FP16: 64KB/token (16 GQA x 4 heads x 256 x 2 x 2). 0.5GB at 8k, 2.0GB at 32k. FP8 halves that.
+- Peak ~4.5-5.0GB at 32k FP16. Comfortable under 15.2.
+- Do not load the 15.3GB GGUF onto the 5080.
+
+Serve path is still the packed remnant, no offload. 15.2GB hard gate = remnant file + 0.9 CUDA + KV. Coding remnant: no vision, serve_ok true.
+
 ## Export
 
 Hour-end dump in, one packed GGUF out. Prune table baked into the file so the remnant and the map cannot drift.
