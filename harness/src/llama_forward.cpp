@@ -261,6 +261,22 @@ struct GgmlSlotGuard {
     }
 };
 
+// Host lm_head only. Not A/B. Not CUDA. CPU_Mapped mmap is not a real
+// host buffer: the sched then lets result_output MUL_MAT read CUDA
+// result_norm t->data (alloc offset / device VA) as a host pointer.
+struct HostLmHeadGuard {
+    ggml_backend_buffer_t weight = nullptr;
+    ggml_backend_buffer_t hidden = nullptr;
+    ~HostLmHeadGuard() {
+        if (weight) {
+            ggml_backend_buffer_free(weight);
+        }
+        if (hidden) {
+            ggml_backend_buffer_free(hidden);
+        }
+    }
+};
+
 // Drop the GGUF CPU_Mapped host alias so graph reserve cannot keep
 // reading t->data as a mapped pointer after we point the tensor at A/B.
 void detach_cpu_mapped(ggml_tensor* t) {
@@ -272,6 +288,28 @@ void detach_cpu_mapped(ggml_tensor* t) {
     t->data = nullptr;
     t->view_src = nullptr;
     t->view_offs = 0;
+}
+
+// Real host VA for lm_head. Not CUDA. Not A/B. Not a ggml alloc offset.
+bool attach_to_real_host(ggml_backend_buffer_t buf, ggml_tensor* t, const void* host,
+                         size_t nbytes) {
+    if (!buf || !t || !host || nbytes == 0) {
+        return false;
+    }
+    void* base = ggml_backend_buffer_get_base(buf);
+    const size_t cap = ggml_backend_buffer_get_size(buf);
+    if (!base || !ggml_slot_pack_ok(0, nbytes, cap)) {
+        return false;
+    }
+    detach_cpu_mapped(t);
+    t->buffer = buf;
+    void* const va = device_va_from_buffer(base, 0);
+    t->data = va;
+    ggml_backend_buffer_init_tensor(buf, t);
+    t->data = va;
+    ggml_backend_tensor_set(t, host, 0, nbytes);
+    t->data = va;
+    return true;
 }
 
 // Load-time bind: point the weight tensor at a ggml CUDA slot, then
@@ -313,6 +351,67 @@ ggml_tensor* mmap_root(ggml_tensor* t) {
         r = r->view_src;
     }
     return r;
+}
+
+uint32_t bind_host_lm_head(const llama_model* model, ggml_backend_buffer_type_t cpu_buft,
+                           HostLmHeadGuard* guard, uint32_t n_ubatch) {
+    if (!model || !cpu_buft || !guard) {
+        return 0;
+    }
+    ggml_tensor* t = llama_model_get_tensor(model, "output.weight");
+    if (!t) {
+        std::fprintf(stderr, "LM_HEAD_HOST missing output.weight\n");
+        return 0;
+    }
+    ggml_tensor* root = mmap_root(t);
+    const size_t nbytes = ggml_nbytes(root);
+    if (nbytes == 0) {
+        return 0;
+    }
+    std::vector<uint8_t> host(nbytes);
+    if (root->buffer && ggml_backend_buffer_is_host(root->buffer) && root->data &&
+        !ptr_looks_like_integer_offset(root->data)) {
+        std::memcpy(host.data(), root->data, nbytes);
+    } else {
+        ggml_backend_tensor_get(root, host.data(), 0, nbytes);
+    }
+    guard->weight = ggml_backend_buft_alloc_buffer(cpu_buft, nbytes);
+    if (!guard->weight || !attach_to_real_host(guard->weight, root, host.data(), nbytes)) {
+        std::fprintf(stderr, "LM_HEAD_HOST bind FAIL n=%llu\n",
+                     static_cast<unsigned long long>(nbytes));
+        return 0;
+    }
+    ggml_backend_buffer_set_usage(guard->weight, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    if (t != root) {
+        t->extra = nullptr;
+        t->buffer = guard->weight;
+        t->view_src = root;
+        void* const view_va =
+            device_va_from_buffer(ggml_backend_buffer_get_base(guard->weight), t->view_offs);
+        t->data = view_va;
+        ggml_backend_view_init(t);
+        t->data = view_va;
+    }
+    const size_t hid = static_cast<size_t>(kHiddenDim) *
+                       static_cast<size_t>(n_ubatch ? n_ubatch : 1u) * sizeof(float);
+    guard->hidden = ggml_backend_buft_alloc_buffer(cpu_buft, hid);
+    const char* buft = buft_name_of(t);
+    const TensorDataKind kind = tensor_data_kind_of(t);
+    const int mmap = buft_is_cpu_mapped(buft) ? 1 : 0;
+    const int real_host =
+        (classify_backend_buft_name(buft) != BuftKind::Cuda && kind == TensorDataKind::InBuffer &&
+         !mmap)
+            ? 1
+            : 0;
+    std::fprintf(stderr, "%s\n",
+                 format_lm_head_host_line(buft, tensor_data_kind_name(kind), nbytes, real_host, mmap)
+                     .c_str());
+    std::fprintf(stderr,
+                 "LM_HEAD_HIDDEN host=%d bytes=%llu result_norm=%llu "
+                 "(D2H dest; not CUDA; A/B untouched)\n",
+                 guard->hidden ? 1 : 0, static_cast<unsigned long long>(hid),
+                 static_cast<unsigned long long>(kResultNormBytes));
+    return 1;
 }
 
 FfnTripletBytes measure_ffn_triplet(const llama_model* model, uint32_t layer) {
@@ -506,8 +605,8 @@ void print_reserve_av_candidates(const llama_model* model, const char* when) {
     }
 }
 
-// Print-only. James 974b0c3: #638 CUDA0 KV, #639 CPU residual,
-// #640 CUDA0 norm-63, #641 CPU output_norm then AV. Do not retouch A/B.
+// Print-only. 0c74a2e: #641 is result_norm 20K (CUDA). AV is the
+// next hop — host result_output MUL_MAT reading that device ptr.
 void print_tail_splits(const llama_model* model, const char* when) {
     if (!model || !when) {
         return;
@@ -563,39 +662,39 @@ void print_tail_splits(const llama_model* model, const char* when) {
     if (layer_norm) {
         print_reserve_av_node(layer_norm, when);
     }
+    const char* on_buft = output_norm ? buft_name_of(output_norm) : "missing";
+    const char* on_data =
+        output_norm ? tensor_data_kind_name(tensor_data_kind_of(output_norm)) : "missing";
+    const char* ow_buft = output_w ? buft_name_of(output_w) : "missing";
+    const char* ow_data = output_w ? tensor_data_kind_name(tensor_data_kind_of(output_w)) : "missing";
     std::fprintf(stderr, "%s\n",
-                 format_tail_split_line(kMeasured5080TailSplitOutputNorm, "output_norm", "RMS_NORM",
-                                        output_norm ? buft_name_of(output_norm) : "missing",
-                                        output_norm ? tensor_data_kind_name(
-                                                          tensor_data_kind_of(output_norm))
-                                                    : "missing",
-                                        output_norm ? output_norm->name : "none",
-                                        output_norm ? buft_name_of(output_norm) : "-",
-                                        output_norm ? tensor_data_kind_name(
-                                                          tensor_data_kind_of(output_norm))
-                                                    : "-",
-                                        "none", "-", "-")
+                 format_tail_split_line(kMeasured5080TailSplitOutputNorm, "result_norm", "RMS_NORM",
+                                        on_buft, on_data, output_norm ? output_norm->name : "none",
+                                        on_buft, on_data, "none", "-", "-")
                      .c_str());
     std::fprintf(stderr, "%s\n",
-                 format_split_why_line(kMeasured5080TailSplitOutputNorm, "output_norm",
-                                       output_norm ? buft_name_of(output_norm) : "missing")
+                 format_split_why_line(kMeasured5080TailSplitOutputNorm, "result_norm", on_buft)
                      .c_str());
+    std::fprintf(stderr,
+                 "TAIL_SPLIT n=%u name=result_norm op=RMS_NORM nbytes=%llu "
+                 "(20K = n_embd F32; not CPU 180K)\n",
+                 kMeasured5080TailSplitOutputNorm,
+                 static_cast<unsigned long long>(kResultNormBytes));
     if (output_norm) {
         print_reserve_av_node(output_norm, when);
     }
     std::fprintf(stderr, "%s\n",
-                 format_tail_split_line(kMeasured5080TailSplitLmHead, "output.weight", "MUL_MAT",
-                                        output_w ? buft_name_of(output_w) : "missing",
-                                        output_w ? tensor_data_kind_name(tensor_data_kind_of(output_w))
-                                                 : "missing",
-                                        "result", output_norm ? buft_name_of(output_norm) : "-",
-                                        output_norm ? tensor_data_kind_name(
-                                                          tensor_data_kind_of(output_norm))
-                                                    : "-",
-                                        output_w ? output_w->name : "output.weight",
-                                        output_w ? buft_name_of(output_w) : "-",
-                                        output_w ? tensor_data_kind_name(tensor_data_kind_of(output_w))
-                                                 : "-")
+                 format_tail_split_line(kMeasured5080TailSplitLmHead, "result_output", "MUL_MAT",
+                                        ow_buft, ow_data, "result_norm", on_buft, on_data,
+                                        output_w ? output_w->name : "output.weight", ow_buft,
+                                        ow_data)
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080TailSplitLmHead, "result_output", ow_buft)
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_tail_hop_line("result_norm", on_buft, on_data, "result_output", ow_buft,
+                                      ow_data)
                      .c_str());
     if (output_w) {
         print_reserve_av_node(output_w, when);
@@ -845,6 +944,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     ggml_backend_buffer_type_t gpu_buft = hybrid_gpu_buft();
     // Alloc A/B AFTER measure. 160-before-load is the 254e10c kill.
     GgmlSlotGuard ggml_slots;
+    HostLmHeadGuard lm_head;
     const std::vector<std::string> gpu_pats = hybrid_gpu_tensor_regexes(n_park);
     const std::vector<std::string> cpu_pats = hybrid_cpu_tensor_regexes();
     std::vector<llama_model_tensor_buft_override> buft_ovs;
@@ -948,6 +1048,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     if (ggml_slots.b) {
         ggml_bound += bind_layer_q4_triplet(model, kNLayers - 2, ggml_slots.b, &clocks);
     }
+    (void)bind_host_lm_head(model, cpu_buft, &lm_head, cfg.n_ubatch);
     parked_cuda_n = 0;
     streamed_cpu_n = 0;
     streamed_cuda_n = 0;

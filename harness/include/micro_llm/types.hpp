@@ -98,6 +98,8 @@ inline constexpr uint64_t kHourCardSoftBytes = 14ull * kGiB;
 inline constexpr uint32_t kHourKvReserveTokens = 20000;
 inline constexpr uint64_t kHourKvReserveBytes =
     static_cast<uint64_t>(kHourKvReserveTokens) * kKvBytesPerTokenFp16;  // ~1.22 GiB / ~1.3GB
+// James 0c74a2e: #641 result_norm is 20K = n_embd F32, not the old CPU 180K.
+inline constexpr uint64_t kResultNormBytes = static_cast<uint64_t>(kHiddenDim) * sizeof(float);
 // 16 GA QKVO at Q4 ~0.6 GiB. Embed ~0.7 GiB. lm_head stays host (logits only).
 inline constexpr uint64_t kPinnedGaWeightBytes = (6ull * kGiB) / 10ull;
 inline constexpr uint64_t kPinnedEmbedWeightBytes = (7ull * kGiB) / 10ull;

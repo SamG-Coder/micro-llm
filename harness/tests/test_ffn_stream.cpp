@@ -464,6 +464,19 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, collapse.find("output_norm.weight=CUDA0") != std::string::npos);
     CHECK(ctx, collapse.find("output.weight=CPU_Mapped") != std::string::npos);
     CHECK(ctx, format_split_why_line(641, "output_norm", "CUDA0").find("SPLIT_WHY n=641") == 0);
+    CHECK(ctx, kResultNormBytes == 5120ull * 4ull);
+    const std::string tail_hop = format_tail_hop_line("result_norm", "CUDA0", "integer_offset",
+                                                     "result_output", "CPU", "in_buffer");
+    CHECK(ctx, tail_hop.find("TAIL_HOP src=result_norm") == 0);
+    CHECK(ctx, tail_hop.find("src_buft=CUDA0") != std::string::npos);
+    CHECK(ctx, tail_hop.find("src_data=integer_offset") != std::string::npos);
+    CHECK(ctx, tail_hop.find("dst=result_output") != std::string::npos);
+    CHECK(ctx, tail_hop.find("dst_buft=CPU") != std::string::npos);
+    const std::string lm = format_lm_head_host_line("CPU", "in_buffer", 1000, 1, 0);
+    CHECK(ctx, lm.find("LM_HEAD_HOST buft=CPU") == 0);
+    CHECK(ctx, lm.find("real_host=1") != std::string::npos);
+    CHECK(ctx, lm.find("mmap=0") != std::string::npos);
+    CHECK(ctx, format_split_why_line(642, "result_output", "CPU").find("SPLIT_WHY n=642") == 0);
     const std::string av =
         format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
                                  "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);

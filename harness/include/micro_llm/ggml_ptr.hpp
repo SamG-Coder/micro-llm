@@ -191,6 +191,35 @@ inline std::string format_tail_collapse_line(const char* output_norm_buft,
     return buf;
 }
 
+// 0c74a2e: #641 is CUDA result_norm 20K, then host lm_head MUL_MAT AVs
+// if it reads that device VA / alloc offset as a host pointer.
+inline std::string format_tail_hop_line(const char* src_name, const char* src_buft,
+                                       const char* src_data, const char* dst_name,
+                                       const char* dst_buft, const char* dst_data) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "TAIL_HOP src=%s src_buft=%s src_data=%s dst=%s dst_buft=%s dst_data=%s "
+                  "(host lm_head must D2H into a real host buffer, not a CUDA offset)",
+                  src_name && src_name[0] ? src_name : "-",
+                  src_buft && src_buft[0] ? src_buft : "-",
+                  src_data && src_data[0] ? src_data : "-",
+                  dst_name && dst_name[0] ? dst_name : "-",
+                  dst_buft && dst_buft[0] ? dst_buft : "-",
+                  dst_data && dst_data[0] ? dst_data : "-");
+    return buf;
+}
+
+inline std::string format_lm_head_host_line(const char* buft, const char* data_kind, uint64_t nbytes,
+                                           int real_host, int mmap) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "LM_HEAD_HOST buft=%s data=%s nbytes=%llu real_host=%d mmap=%d "
+                  "(output.weight stays host; not CUDA; extra_park=0 hooks=0)",
+                  buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-",
+                  static_cast<unsigned long long>(nbytes), real_host, mmap);
+    return buf;
+}
+
 // One A/B slot = one streamed layer’s gate+up+down. 254e10c: down
 // offset past 160. If 160 < aligned sum, the slot MUST grow. Extra
 // align slack so down is not flush against the cap.
