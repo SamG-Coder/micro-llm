@@ -103,4 +103,9 @@ bool save_prune_table(const PruneTable& table, const std::string& path,
 bool load_prune_table(PruneTable& table, const std::string& path,
                       std::string* err = nullptr);
 
+// Crash-insurance overwrite: write path+".tmp" (scores / prune table only,
+// no mid-run pack) then atomic rename to path. Do not cut weights.
+bool checkpoint_prune_table(const PruneTable& table, const std::string& path,
+                            std::string* err = nullptr);
+
 }  // namespace micro_llm

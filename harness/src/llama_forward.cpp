@@ -4,6 +4,7 @@
 
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/graph_hooks.hpp"
+#include "micro_llm/trace_cli.hpp"
 
 #include "llama.h"
 #include "ggml.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace micro_llm {
@@ -37,18 +39,13 @@ const float* tensor_f32_host(ggml_tensor* t, LlamaHookUser* u, bool* on_device) 
     if (tensor_is_f32(t) && tensor_on_host(t) && t->data) {
         return static_cast<const float*>(t->data);
     }
-    if (tensor_is_f32(t) && t->data && !tensor_on_host(t)) {
-        *on_device = true;
-        return static_cast<const float*>(t->data);
-    }
-    // Fallback: copy (F16/BF16/device) onto the host. Never invent values.
-    u->host.resize(n);
-    ggml_backend_tensor_get(t, u->host.data(), 0, ggml_nbytes(t));
     if (!tensor_is_f32(t)) {
         // Quantized / non-F32 activations are unexpected; refuse the tap.
         return nullptr;
     }
-    *on_device = false;
+    // CUDA F32: D2H. Never treat a device pointer as host (prior 0xC0000005).
+    u->host.resize(n);
+    ggml_backend_tensor_get(t, u->host.data(), 0, ggml_nbytes(t));
     return u->host.data();
 }
 
@@ -111,8 +108,30 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     llama_backend_init();
 
     llama_model_params mparams = llama_model_default_params();
+    // Hybrid pin: ngl=99 (CUDA by default). NOT ngl=16 — that is the first
+    // 16 layers (12 DeltaNet + 4 GA), the wrong 16, and would park ~16.5GB
+    // on the card if someone meant "whole file".
     mparams.n_gpu_layers = cfg.n_gpu_layers;
+    if (mparams.n_gpu_layers == 16) {
+        mparams.n_gpu_layers = hybrid_n_gpu_layers();
+    }
     mparams.load_mtp = cfg.load_mtp;
+
+    ggml_backend_buffer_type_t cpu_buft = ggml_backend_cpu_buffer_type();
+    const std::vector<std::string> cpu_pats = hybrid_cpu_tensor_regexes();
+    std::vector<llama_model_tensor_buft_override> buft_ovs;
+    buft_ovs.reserve(cpu_pats.size() + 1);
+    for (const std::string& pat : cpu_pats) {
+        llama_model_tensor_buft_override ov{};
+        ov.pattern = pat.c_str();
+        ov.buft = cpu_buft;
+        buft_ovs.push_back(ov);
+    }
+    llama_model_tensor_buft_override ov_end{};
+    ov_end.pattern = nullptr;
+    ov_end.buft = nullptr;
+    buft_ovs.push_back(ov_end);
+    mparams.tensor_buft_overrides = buft_ovs.data();
 
     llama_model* model = llama_model_load_from_file(cfg.model_path.c_str(), mparams);
     if (!model) {
@@ -136,12 +155,24 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     }
 
     GraphHookSession session(hooks, streamer);
+    if (cfg.on_htr1) {
+        session.set_on_htr1(cfg.on_htr1);
+    }
     LlamaHookUser user;
     user.session = &session;
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = cfg.n_ctx;
-    cparams.n_batch = 512;
+    cparams.n_batch = cfg.n_batch ? cfg.n_batch : 512;
+    cparams.n_ubatch = cfg.n_ubatch ? cfg.n_ubatch : 32;
+    // flash-attn + CPU FFN split has AVed; disable FA and op_offload.
+    if (cfg.disable_flash_attn) {
+        cparams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    }
+    if (cfg.disable_op_offload) {
+        cparams.op_offload = false;
+    }
+    cparams.offload_kqv = true;  // KV stays CUDA with the 16 GA blocks
     cparams.cb_eval = llama_cb_eval;
     cparams.cb_eval_user_data = &user;
 
@@ -205,6 +236,15 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
             return st;
         }
         consumed += n;
+        if (cfg.abort && cfg.abort->load()) {
+            streamer.end_session();
+            llama_free(ctx);
+            llama_model_free(model);
+            llama_backend_free();
+            st.ok = false;
+            st.message = "hour aborted";
+            return st;
+        }
     }
 
     uint32_t generated = 0;
@@ -223,11 +263,21 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
                              llama_vocab_is_control(vocab, last);
         session.finish_token(static_cast<uint32_t>(last), top.data(),
                              static_cast<uint32_t>(top.size()), special);
-        if (llama_vocab_is_eog(vocab, last)) {
-            break;
-        }
+        // Continue after EOS. Do not stop the dump at the first EOG.
         if (static_cast<uint32_t>(last) < kVocabSize) {
             hooks.on_vocab_id(static_cast<uint32_t>(last));
+        }
+        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() &&
+            hooks.table().n_tokens > 0 &&
+            (hooks.table().n_tokens % cfg.checkpoint_every) == 0) {
+            std::string err;
+            checkpoint_prune_table(hooks.table(), cfg.out_path, &err);
+        }
+        if (cfg.abort && cfg.abort->load()) {
+            break;
+        }
+        if (!cfg.continue_after_eos && llama_vocab_is_eog(vocab, last)) {
+            break;
         }
         session.begin_token(static_cast<uint32_t>(n_tok + generated));
         llama_batch batch = llama_batch_get_one(&last, 1);

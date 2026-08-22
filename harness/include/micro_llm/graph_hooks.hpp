@@ -10,6 +10,7 @@
 #include "micro_llm/trace_hooks.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,6 +50,9 @@ public:
     void finish_token(uint32_t sampled, const uint32_t* topk, uint32_t k,
                       bool special_or_high_loss);
 
+    // Called with one HTR1 record (kHtr1RecordBytes) BEFORE after_logits.
+    void set_on_htr1(std::function<void(const uint8_t*, size_t)> fn) { on_htr1_ = std::move(fn); }
+
     uint32_t ffn_gate_hits() const { return ffn_gate_hits_; }
     uint32_t ffn_up_hits() const { return ffn_up_hits_; }
     uint32_t delta_hits() const { return delta_hits_; }
@@ -59,6 +63,7 @@ private:
 
     TraceHooks& hooks_;
     TraceStreamer& streamer_;
+    std::function<void(const uint8_t*, size_t)> on_htr1_;
     std::vector<float> hidden_in_;
     std::vector<float> pending_gate_;
     const float* device_gate_ = nullptr;

@@ -36,13 +36,13 @@ Harness and export are on main. Streamer dumps scores. Packer cuts and writes th
 
 First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.md).
 
-Sample hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. The window is the 3D sample ring, not the hour. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/).
+Hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. `--ui` / no args is the sample ring. `--model PATH.gguf` (with or without `--ui`) opens the live hour window and decodes. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/). Per-token flash: [docs/HOOK_RING.md](docs/HOOK_RING.md).
 
 ## Build
 
 cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure
 
-Windows: the same cmake produces `micro-llm-trace.exe`. Double-click it (or run with no args / `--ui`) to open the sample map. Do not run `npm`. The hour still needs `--model`.
+Windows: the same cmake produces `micro-llm-trace.exe`. Double-click it (or run with no args / `--ui`) to open the sample map. `--model PATH.gguf --out hour.mlpt` starts the hour and the live window (`--n-predict` defaults to 20000). Do not run `npm`.
 
 cd export && pip install -r requirements.txt && pytest -q
 

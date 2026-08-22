@@ -111,6 +111,14 @@ The 15.2GB RTX 5080 gate is the serve stack, not a second cut ceiling: remnant f
 
 Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
+## Hybrid CUDA hour (pin, don't ngl)
+
+llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). We do not use it. `n_gpu_layers = 99` puts tensors on CUDA by default. Tensor buffer overrides pull FFN (`ffn_gate` / `ffn_up` / `ffn_down`) and DeltaNet (`ssm_*`, `attn_qkv`, `attn_gate`) to CPU. Gated Attention on layers 3,7,11,...,63 plus KV stay CUDA. Do not load the host GGUF onto the 5080.
+
+Flash-attn + CPU FFN split has AVed; the hour disables FA and `op_offload`. `n_batch=512`, `n_ubatch=32`. Hooks D2H CUDA F32 activations — never read a device pointer as host.
+
+Live card stack on the hotspot bar is pinned GA weights + ~0.9 CUDA + KV. Not the labeled 10.8 sample, not the host file size.
+
 ## Export
 
 Hour-end dump in, one packed GGUF out. Prune table baked into the file so the remnant and the map cannot drift.

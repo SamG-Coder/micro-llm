@@ -1,0 +1,110 @@
+#include "test_common.hpp"
+
+#include "micro_llm/micro_llm.hpp"
+
+#include <cstring>
+#include <string>
+#include <vector>
+
+void test_hour_cli_resolve(TestContext& ctx) {
+    using namespace micro_llm;
+
+    CHECK(ctx, resolve_n_predict(true, false, 64) == kHourNPredict);
+    CHECK(ctx, resolve_n_predict(true, true, 64) == 64);
+    CHECK(ctx, resolve_n_predict(false, false, 64) == 64);
+    CHECK(ctx, kHourNPredict == 20000u);
+    CHECK(ctx, kHourCheckpointEvery == 2000u);
+
+    CHECK(ctx, hybrid_n_gpu_layers() == 99);
+    CHECK(ctx, hybrid_n_gpu_layers() != 16);
+    const auto pats = hybrid_cpu_tensor_regexes();
+    bool has_gate = false, has_up = false, has_down = false, has_ssm = false;
+    bool has_wrong_ngl = false;
+    for (const auto& p : pats) {
+        if (p.find("ffn_gate") != std::string::npos) has_gate = true;
+        if (p.find("ffn_up") != std::string::npos) has_up = true;
+        if (p.find("ffn_down") != std::string::npos) has_down = true;
+        if (p.find("ssm_") != std::string::npos) has_ssm = true;
+        if (p.find("ngl") != std::string::npos || p == "16") has_wrong_ngl = true;
+    }
+    CHECK(ctx, has_gate && has_up && has_down && has_ssm);
+    CHECK(ctx, !has_wrong_ngl);
+    CHECK(ctx, pinned_ga_weight_bytes() > 0);
+    CHECK(ctx, pinned_ga_weight_bytes() < kGiB);  // card stack, not 15.3GB host GGUF
+
+    const char* prompt = default_coding_assistant_prompt();
+    CHECK(ctx, prompt != nullptr);
+    const std::string p(prompt);
+    CHECK(ctx, p.find("merge_intervals") == std::string::npos);
+    CHECK(ctx, p.find("binary_search") == std::string::npos);
+    CHECK(ctx, p.find("slugify") == std::string::npos);
+    CHECK(ctx, p.find("string_view") == std::string::npos);
+    CHECK(ctx, p.find("BUF") == std::string::npos);
+
+    char ui[] = "--ui";
+    char* ui_only[] = {const_cast<char*>("micro-llm-trace"), ui, nullptr};
+    const TraceCliArgs a1 = parse_trace_cli(2, ui_only);
+    CHECK(ctx, resolve_trace_mode(a1) == TraceCliMode::SampleUi);
+    CHECK(ctx, a1.cfg.n_predict == kCliTestNPredict);
+
+    char model[] = "--model";
+    char path[] = "qwen.gguf";
+    char* model_only[] = {const_cast<char*>("micro-llm-trace"), model, path, nullptr};
+    const TraceCliArgs a2 = parse_trace_cli(3, model_only);
+    CHECK(ctx, resolve_trace_mode(a2) == TraceCliMode::HourLive);
+    CHECK(ctx, a2.cfg.n_predict == kHourNPredict);
+    CHECK(ctx, a2.cfg.n_gpu_layers == 99);
+    CHECK(ctx, a2.cfg.n_batch == 512);
+    CHECK(ctx, a2.cfg.n_ubatch == 32);
+    CHECK(ctx, a2.cfg.checkpoint_every == 2000);
+    CHECK(ctx, a2.cfg.continue_after_eos);
+    CHECK(ctx, a2.cfg.disable_flash_attn);
+    CHECK(ctx, a2.cfg.disable_op_offload);
+
+    char* both[] = {const_cast<char*>("micro-llm-trace"), ui, model, path, nullptr};
+    const TraceCliArgs a3 = parse_trace_cli(4, both);
+    CHECK(ctx, resolve_trace_mode(a3) == TraceCliMode::HourLive);
+    CHECK(ctx, a3.want_ui);
+    CHECK(ctx, !a3.cfg.model_path.empty());
+    CHECK(ctx, a3.cfg.n_predict == kHourNPredict);
+
+    char stub[] = "--stub";
+    char np[] = "--n-predict";
+    char two[] = "2";
+    char* stub_args[] = {const_cast<char*>("micro-llm-trace"), stub, np, two, nullptr};
+    const TraceCliArgs a4 = parse_trace_cli(4, stub_args);
+    CHECK(ctx, resolve_trace_mode(a4) == TraceCliMode::HourHeadless);
+    CHECK(ctx, a4.cfg.n_predict == 2);
+
+    char* stub_ui[] = {const_cast<char*>("micro-llm-trace"), stub, ui, np, two, nullptr};
+    const TraceCliArgs a5 = parse_trace_cli(5, stub_ui);
+    CHECK(ctx, resolve_trace_mode(a5) == TraceCliMode::HourLive);
+
+    // Stub hour still emits HTR1 and can checkpoint without a GGUF.
+    LiveForwardConfig cfg;
+    cfg.n_predict = 2;
+    cfg.checkpoint_every = 1;
+    cfg.out_path = "stub_hour_ckpt.mlpt";
+    std::vector<uint32_t> tokens;
+    cfg.on_htr1 = [&](const uint8_t* rec, size_t n) {
+        CHECK(ctx, rec != nullptr);
+        CHECK(ctx, n == kHtr1RecordBytes);
+        Htr1TokenMeta meta;
+        decode_htr1_record(rec, &meta, nullptr, nullptr, nullptr);
+        tokens.push_back(meta.sampled_id);
+    };
+    StreamerConfig scfg;
+    scfg.ffn_scratch_bytes = 4096;
+    TraceStreamer streamer(scfg);
+    TraceHooks hooks;
+    auto stub_be = make_live_forward("stub");
+    const LiveForwardStatus st = stub_be->run(hooks, streamer, cfg);
+    CHECK(ctx, st.ok);
+    CHECK(ctx, tokens.size() == 2);
+    PruneTable loaded;
+    std::string err;
+    CHECK(ctx, load_prune_table(loaded, cfg.out_path, &err));
+    CHECK(ctx, loaded.n_tokens == 2);
+    std::remove(cfg.out_path.c_str());
+    std::remove((cfg.out_path + ".tmp").c_str());
+}

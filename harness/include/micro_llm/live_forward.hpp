@@ -11,6 +11,9 @@
 #include "micro_llm/streamer.hpp"
 #include "micro_llm/trace_hooks.hpp"
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -20,12 +23,21 @@ struct LiveForwardConfig {
     std::string model_path;
     std::string prompt;
     std::string out_path = "prune_table.bin";
-    uint32_t n_predict = 64;
+    uint32_t n_predict = 64;  // tests. Real hour without --n-predict uses 20000.
     uint32_t n_ctx = 8192;
     uint32_t top_k = 40;
+    uint32_t n_batch = 512;
+    uint32_t n_ubatch = 32;
+    uint32_t checkpoint_every = 2000;
     bool load_vision = false;  // job is text coding assistant
     bool load_mtp = false;
-    int32_t n_gpu_layers = -1;
+    bool continue_after_eos = true;
+    bool disable_flash_attn = true;
+    bool disable_op_offload = true;
+    // Hybrid pin: 99 = CUDA by default. Not ngl=16 (wrong 16 layers).
+    int32_t n_gpu_layers = 99;
+    std::function<void(const uint8_t* rec, size_t nbytes)> on_htr1;
+    std::atomic<bool>* abort = nullptr;
 };
 
 struct LiveForwardStatus {

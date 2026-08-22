@@ -9,6 +9,8 @@ export const KV_BYTES_PER_TOKEN_FP16 = 65536;
 // Labeled example only. Not a measured remnant.
 export const SAMPLE_WEIGHT_BYTES = Math.trunc(10.8 * GIB);
 export const SAMPLE_BASE_CTX = 8192;
+// Pinned 16 GA blocks at Q4. Live card stack, not the host GGUF file.
+export const PINNED_GA_WEIGHT_BYTES = Math.trunc(0.6 * GIB);
 
 export function kvBytes(ctx, perToken = KV_BYTES_PER_TOKEN_FP16) {
   return ctx * perToken;
@@ -61,6 +63,16 @@ export function sampleBudgetAtToken(tokenIndex) {
   return barState({
     weightBytes: SAMPLE_WEIGHT_BYTES,
     ctx: SAMPLE_BASE_CTX + tokenIndex,
+    serveOk: true,
+    vision: false,
+  });
+}
+
+// Live card stack: pinned GA weights + ~0.9 CUDA + KV. Not 10.8, not host GGUF.
+export function liveCardStackAtToken(tokenIndex, extra = {}) {
+  return barState({
+    weightBytes: extra.weightBytes ?? PINNED_GA_WEIGHT_BYTES,
+    ctx: (extra.baseCtx ?? SAMPLE_BASE_CTX) + tokenIndex,
     serveOk: true,
     vision: false,
   });

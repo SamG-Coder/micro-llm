@@ -43,6 +43,8 @@ add_library(micro_llm
   src/graph_hooks.cpp
   src/live_forward.cpp
   src/llama_forward.cpp
+  src/hook_ring.cpp
+  src/trace_cli.cpp
 )
 target_include_directories(micro_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(micro_llm PUBLIC cxx_std_17)
@@ -196,6 +198,8 @@ add_executable(micro_llm_tests
   tests/test_graph_hooks.cpp
   tests/test_gguf_serve.cpp
   tests/test_hotspot_ui.cpp
+  tests/test_hook_ring.cpp
+  tests/test_hour_cli.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(micro_llm_tests PRIVATE micro_llm micro_llm_ui)
@@ -212,6 +216,9 @@ add_test(NAME micro_llm_trace_stub
          COMMAND micro-llm-trace --stub --n-predict 2 --out ${CMAKE_CURRENT_BINARY_DIR}/stub_prune.bin)
 add_test(NAME micro_llm_trace_ui_check
          COMMAND micro-llm-trace --ui-check)
+add_test(NAME micro_llm_trace_ui_keeps_model
+         COMMAND micro-llm-trace --ui --model ${CMAKE_CURRENT_BINARY_DIR}/missing.gguf --out ${CMAKE_CURRENT_BINARY_DIR}/ui_model.bin)
+set_tests_properties(micro_llm_trace_ui_keeps_model PROPERTIES WILL_FAIL TRUE)
 add_test(NAME micro_llm_view_ui_check
          COMMAND micro-llm-view --ui-check)
 

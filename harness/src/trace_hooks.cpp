@@ -19,6 +19,7 @@ void TraceHooks::begin_token(uint32_t token_index) {
     token_index_ = token_index;
     token_open_ = true;
     std::fill(token_fired_.begin(), token_fired_.end(), 0);
+    token_pack_rel_.fill(0.f);
 }
 
 bool TraceHooks::on_ffn_activations(uint32_t layer, const float* gate, const float* up,
@@ -96,6 +97,7 @@ bool TraceHooks::on_delta_residual(uint32_t pack_id, float relative_r) {
     p.layer = delta_layer_from_pack_id(pack_id);
     const double r = static_cast<double>(relative_r);
     p.sumsq_residual += r * r;
+    token_pack_rel_[pack_id] = relative_r;
     if (relative_r > table_.spike_eps) {
         p.n_spike += 1;
     }
@@ -113,6 +115,7 @@ bool TraceHooks::on_delta_hidden(uint32_t pack_id, const float* hidden_in,
         sumsq += d * d;
     }
     const float r = relative_residual_l2(hidden_in, hidden_out, hidden_dim);
+    token_pack_rel_[pack_id] = r;
     PackStat& p = table_.pack(pack_id);
     p.pack = pack_id;
     p.layer = delta_layer_from_pack_id(pack_id);

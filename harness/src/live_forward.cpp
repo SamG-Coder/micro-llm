@@ -2,6 +2,7 @@
 
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/graph_hooks.hpp"
+#include "micro_llm/hook_ring.hpp"
 
 #include <memory>
 #include <string>
@@ -82,8 +83,20 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
         streamer.enter_logits();
         hooks.on_vocab_id(sampled);
         hooks.on_topk_ids(topk, 2);
+        if (cfg.on_htr1) {
+            emit_htr1(hooks, sampled, topk, 2, t == 0, cfg.on_htr1);
+        }
         hooks.after_logits(t, t == 0);
         streamer.leave_logits();
+        if (cfg.checkpoint_every != 0 && !cfg.out_path.empty() &&
+            hooks.table().n_tokens > 0 &&
+            (hooks.table().n_tokens % cfg.checkpoint_every) == 0) {
+            std::string err;
+            checkpoint_prune_table(hooks.table(), cfg.out_path, &err);
+        }
+        if (cfg.abort && cfg.abort->load()) {
+            break;
+        }
     }
     streamer.end_session();
     s.n_tokens = hooks.table().n_tokens;

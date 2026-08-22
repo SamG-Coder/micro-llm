@@ -1,5 +1,7 @@
 #include "micro_llm/graph_hooks.hpp"
 
+#include "micro_llm/hook_ring.hpp"
+
 #include <cstring>
 
 namespace micro_llm {
@@ -90,6 +92,9 @@ void GraphHookSession::finish_token(uint32_t sampled, const uint32_t* topk, uint
     hooks_.on_vocab_id(sampled);
     if (topk && k) {
         hooks_.on_topk_ids(topk, k);
+    }
+    if (on_htr1_) {
+        emit_htr1(hooks_, sampled, topk, k, special_or_high_loss, on_htr1_);
     }
     streamer_.enter_logits();
     hooks_.after_logits(hooks_.current_token(), special_or_high_loss);

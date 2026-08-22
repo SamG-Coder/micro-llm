@@ -68,6 +68,27 @@ function setRGB(col, i, r, g, b) {
   col[i * 3 + 2] = b;
 }
 
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+export function lerpRGB(col, i, r, g, b, t) {
+  const o = i * 3;
+  col[o] = lerp(col[o], r, t);
+  col[o + 1] = lerp(col[o + 1], g, t);
+  col[o + 2] = lerp(col[o + 2], b, t);
+}
+
+function smoothstep(edge0, edge1, x) {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+const FLASH_RISE = 0.62;
+const FLASH_FALL = 0.075;
+const COLOR_LERP = 0.32;
+const FLYER_RISE = 0.22;
+
 function addStarField(scene) {
   const n = 3200;
   const pos = new Float32Array(n * 3);
@@ -303,26 +324,24 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   function applyToken(record, bins, extra = {}) {
     for (let i = 0; i < FFN_COUNT; i++) {
       if (bins[i] && (!presentBins || presentBins[i])) {
-        ffnFlash[i] = 1;
+        ffnFlash[i] = lerp(ffnFlash[i], 1, FLASH_RISE);
         ffnHeat[i] = 0.2;
       }
     }
     for (let p = 0; p < N_PACKS; p++) {
       if (presentPacks && !presentPacks[p]) continue;
       if (packSpikeBit(record.packSpike, p)) {
-        packFlash[p] = 1;
+        packFlash[p] = lerp(packFlash[p], 1, FLASH_RISE);
       }
     }
     for (let g = 0; g < N_SPINE; g++) {
       spineSpark[g] = 1;
       spineHeat[g] = Math.min(0.85, spineHeat[g] * 0.94 + 0.08);
     }
-    vocabFlash.fill(0);
-    vocabRare.fill(0);
     const ids = [record.sampledId, ...record.topk];
     for (const id of ids) {
       const b = vocabBinIndex(id);
-      vocabFlash[b] = Math.max(vocabFlash[b], 1);
+      vocabFlash[b] = lerp(vocabFlash[b], 1, FLASH_RISE);
       vocabRare[b] = Math.max(vocabRare[b], rarityGlow(id));
     }
     if (extra.word !== undefined) {
@@ -332,21 +351,15 @@ export function createMap(container, { presentBins = null, presentPacks = null }
 
   function paintClouds(dt) {
     for (let p = 0; p < N_PACKS; p++) {
-      packFlash[p] *= 0.8;
+      packFlash[p] = lerp(packFlash[p], 0, FLASH_FALL);
       const pulse = packFlash[p];
-      const shown = !(presentPacks && !presentPacks[p]) && pulse >= 0.04;
-      if (!shown) {
-        setRGB(packs.col, p, 0, 0, 0);
-        setRGB(packStreaks.col, p * 2, 0, 0, 0);
-        setRGB(packStreaks.col, p * 2 + 1, 0, 0, 0);
-      } else {
-        const r = 0.42 + pulse * 0.28;
-        const g = 0.34 + pulse * 0.12;
-        const b = 0.2;
-        setRGB(packs.col, p, r, g, b);
-        setRGB(packStreaks.col, p * 2, r, g, b);
-        setRGB(packStreaks.col, p * 2 + 1, r * 0.25, g * 0.25, b * 0.25);
-      }
+      const present = !(presentPacks && !presentPacks[p]);
+      const r = present ? pulse * (0.42 + pulse * 0.28) : 0;
+      const g = present ? pulse * (0.34 + pulse * 0.12) : 0;
+      const b = present ? pulse * 0.2 : 0;
+      lerpRGB(packs.col, p, r, g, b, COLOR_LERP);
+      lerpRGB(packStreaks.col, p * 2, r, g, b, COLOR_LERP);
+      lerpRGB(packStreaks.col, p * 2 + 1, r * 0.25, g * 0.25, b * 0.25, COLOR_LERP);
     }
     packs.geo.attributes.color.needsUpdate = true;
     packStreaks.geo.attributes.color.needsUpdate = true;
@@ -366,34 +379,32 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     spine.geo.attributes.color.needsUpdate = true;
 
     for (let i = 0; i < FFN_COUNT; i++) {
-      ffnFlash[i] *= 0.78;
+      ffnFlash[i] = lerp(ffnFlash[i], 0, FLASH_FALL);
       ffnHeat[i] *= 0.84;
       const f = ffnFlash[i];
       const h = ffnHeat[i];
-      if (f < 0.03 && h < 0.04) {
-        setRGB(ffn.col, i, 0, 0, 0);
-        setRGB(ffnStreaks.col, i * 2, 0, 0, 0);
-        setRGB(ffnStreaks.col, i * 2 + 1, 0, 0, 0);
-      } else {
-        const r = 0.16 + f * 0.38 + h * 0.08;
-        const g = 0.22 + f * 0.32 + h * 0.06;
-        const b = 0.3 + f * 0.42 + h * 0.08;
-        setRGB(ffn.col, i, r, g, b);
-        setRGB(ffnStreaks.col, i * 2, r, g, b);
-        setRGB(ffnStreaks.col, i * 2 + 1, r * 0.2, g * 0.2, b * 0.2);
-      }
+      const glow = Math.min(1, f + h);
+      const r = glow * (0.16 + f * 0.38 + h * 0.08);
+      const g = glow * (0.22 + f * 0.32 + h * 0.06);
+      const b = glow * (0.3 + f * 0.42 + h * 0.08);
+      lerpRGB(ffn.col, i, r, g, b, COLOR_LERP);
+      lerpRGB(ffnStreaks.col, i * 2, r, g, b, COLOR_LERP);
+      lerpRGB(ffnStreaks.col, i * 2 + 1, r * 0.2, g * 0.2, b * 0.2, COLOR_LERP);
     }
     ffn.geo.attributes.color.needsUpdate = true;
     ffnStreaks.geo.attributes.color.needsUpdate = true;
 
     for (let b = 0; b < VOCAB_BINS; b++) {
-      vocabFlash[b] *= 0.8;
+      vocabFlash[b] = lerp(vocabFlash[b], 0, FLASH_FALL);
       const f = vocabFlash[b] * (vocabRare[b] || 1);
-      if (f < 0.03) {
-        setRGB(vocab.col, b, 0, 0, 0);
-      } else {
-        setRGB(vocab.col, b, 0.28 + f * 0.22, 0.28 + f * 0.18, 0.22 + f * 0.12);
-      }
+      lerpRGB(
+        vocab.col,
+        b,
+        f * (0.28 + f * 0.22),
+        f * (0.28 + f * 0.18),
+        f * (0.22 + f * 0.12),
+        COLOR_LERP,
+      );
     }
     vocab.geo.attributes.color.needsUpdate = true;
 
@@ -411,7 +422,8 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       fl.sprite.position.set(x, y, z);
       fl.head.position.set(x, y, z);
       fl.streak.geometry.setPositions([bx, by, bz, x, y, z]);
-      const fade = t < 0.08 ? t / 0.08 : 1 - (t - 0.08) / 0.92;
+      const fade =
+        t < FLYER_RISE ? smoothstep(0, FLYER_RISE, t) : 1 - smoothstep(FLYER_RISE, 1, t);
       const a = Math.max(0, fade) * (0.62 + fl.sprite.userData.rare * 0.26);
       fl.sprite.material.opacity = a;
       fl.streak.material.opacity = Math.min(1, a * 1.15);

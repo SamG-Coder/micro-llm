@@ -12,6 +12,7 @@
 
 #include "micro_llm/prune_table.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -67,6 +68,7 @@ public:
     PruneTable& table() { return table_; }
 
     const uint8_t* token_fired_bits() const { return token_fired_.data(); }
+    const float* token_pack_rel() const { return token_pack_rel_.data(); }
     bool token_fired(uint32_t layer, uint32_t channel) const;
     uint32_t current_token() const { return token_index_; }
     bool token_open() const { return token_open_; }
@@ -74,7 +76,8 @@ public:
 private:
     PruneTable table_;
     std::vector<uint8_t> token_fired_;
-    std::vector<float> abs_scratch_;  // one token, 17408 floats ? not [chunk x C]
+    std::array<float, kNDeltaNetPacks> token_pack_rel_{};
+    std::vector<float> abs_scratch_;  // one token, 17408 floats — not [chunk x C]
     uint32_t token_index_ = 0;
     bool token_open_ = false;
 };
