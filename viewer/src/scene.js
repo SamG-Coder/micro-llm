@@ -59,12 +59,7 @@ export function createMap(container) {
   const tmpColor = new THREE.Color();
 
   const packGeo = new THREE.OctahedronGeometry(0.28, 0);
-  const packMat = new THREE.MeshStandardMaterial({
-    color: 0x1c2433,
-    emissive: 0x000000,
-    roughness: 0.45,
-    metalness: 0.35,
-  });
+  const packMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const packs = new THREE.InstancedMesh(packGeo, packMat, N_PACKS);
   packs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   const packFlash = new Float32Array(N_PACKS);
@@ -101,14 +96,8 @@ export function createMap(container) {
   }
   scene.add(spine);
 
-  const ffnGeo = new THREE.BoxGeometry(0.1, 0.22, 0.1);
-  const ffnMat = new THREE.MeshStandardMaterial({
-    color: 0x141821,
-    emissive: 0xff4d8d,
-    emissiveIntensity: 0.15,
-    roughness: 0.55,
-    metalness: 0.1,
-  });
+  const ffnGeo = new THREE.BoxGeometry(0.09, 0.2, 0.09);
+  const ffnMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const ffn = new THREE.InstancedMesh(ffnGeo, ffnMat, FFN_COUNT);
   const ffnFlash = new Float32Array(FFN_COUNT);
   const ffnHeat = new Float32Array(FFN_COUNT);
@@ -125,12 +114,7 @@ export function createMap(container) {
   scene.add(ffn);
 
   const vocabGeo = new THREE.BoxGeometry(0.085, 0.28, 0.12);
-  const vocabMat = new THREE.MeshStandardMaterial({
-    color: 0x16120c,
-    emissive: 0xf5e6a3,
-    emissiveIntensity: 0.2,
-    roughness: 0.4,
-  });
+  const vocabMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const vocab = new THREE.InstancedMesh(vocabGeo, vocabMat, VOCAB_BINS);
   const vocabFlash = new Float32Array(VOCAB_BINS);
   const vocabRare = new Float32Array(VOCAB_BINS);
@@ -150,16 +134,12 @@ export function createMap(container) {
   rail.position.set(-0.15, towerH * 0.5, -0.35);
   scene.add(rail);
 
-  for (let g = 0; g < N_GROUPS; g++) {
-    const y0 = layerY(g * 4) - 0.12;
-    const y1 = layerY(g * 4 + 3) + 0.12;
-    const h = y1 - y0;
-    const frame = new THREE.Mesh(
-      new THREE.BoxGeometry(9.2, h, 0.02),
-      new THREE.MeshBasicMaterial({ color: 0x121826, transparent: true, opacity: 0.35 }),
-    );
-    frame.position.set(3.6, (y0 + y1) / 2, -0.55);
-    scene.add(frame);
+  const groupLineMat = new THREE.MeshBasicMaterial({ color: 0x1a2230 });
+  for (let g = 1; g < N_GROUPS; g++) {
+    const y = (layerY(g * 4 - 1) + layerY(g * 4)) / 2;
+    const sep = new THREE.Mesh(new THREE.BoxGeometry(8.4, 0.02, 0.02), groupLineMat);
+    sep.position.set(3.4, y, -0.4);
+    scene.add(sep);
   }
 
   function applyToken(record, bins) {
@@ -190,9 +170,13 @@ export function createMap(container) {
 
   function paintInstances() {
     for (let p = 0; p < N_PACKS; p++) {
-      packFlash[p] *= 0.82;
+      packFlash[p] *= 0.84;
       const pulse = packFlash[p];
-      tmpColor.setRGB(0.14 + pulse * 0.86, 0.13 + pulse * 0.55, 0.16 * (1 - pulse));
+      if (pulse < 0.04) {
+        tmpColor.setRGB(0.18, 0.22, 0.3);
+      } else {
+        tmpColor.setRGB(1.0, 0.62 + pulse * 0.2, 0.08);
+      }
       packs.setColorAt(p, tmpColor);
       const layer = layerFromPackId(p);
       dummy.position.set(-1.15, layerY(layer), 0);
@@ -219,17 +203,17 @@ export function createMap(container) {
     }
     spine.instanceColor.needsUpdate = true;
     spine.instanceMatrix.needsUpdate = true;
-    spineMat.emissiveIntensity = 0.55 + 0.55 * Math.max(...spineSpark);
+    spineMat.emissiveIntensity = 0.65 + 0.7 * Math.max(...spineSpark);
 
     for (let i = 0; i < FFN_COUNT; i++) {
-      ffnFlash[i] *= 0.8;
-      ffnHeat[i] *= 0.9;
+      ffnFlash[i] *= 0.78;
+      ffnHeat[i] *= 0.88;
       const f = ffnFlash[i];
       const h = ffnHeat[i];
-      if (f < 0.02 && h < 0.04) {
-        tmpColor.setRGB(0.07, 0.09, 0.12);
+      if (f < 0.03 && h < 0.05) {
+        tmpColor.setRGB(0.055, 0.065, 0.085);
       } else {
-        tmpColor.setRGB(0.14 + f * 0.86 + h * 0.25, 0.06 + f * 0.18 + h * 0.06, 0.16 + f * 0.35 + h * 0.12);
+        tmpColor.setRGB(0.2 + f * 0.8 + h * 0.2, 0.05 + f * 0.25, 0.12 + f * 0.45 + h * 0.1);
       }
       ffn.setColorAt(i, tmpColor);
     }
