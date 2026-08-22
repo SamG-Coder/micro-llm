@@ -1,3 +1,4 @@
+#include "micro_llm/file_stat.hpp"
 #include "micro_llm/gguf_meta.hpp"
 #include "micro_llm/hotspot_ui.hpp"
 #include "micro_llm/hook_ring.hpp"
@@ -12,25 +13,14 @@
 #include <cstring>
 #include <string>
 
-#ifdef _WIN32
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
-#endif
-#endif
-#include <sys/stat.h>
-
 namespace {
-
-bool file_exists(const std::string& path) {
-    struct stat st {};
-    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
-}
 
 void usage(const char* argv0) {
     std::fprintf(stderr,
                  "Usage: %s [--ui] [--ui-check]\n"
                  "          --model PATH.gguf [--prompt TEXT] [--out prune_table.bin]\n"
                  "          [--n-predict N] [--top-k K] [--ctx N] [--stub]\n"
+                 "          [--trace-off|--no-trace] [--trace-on]\n"
                  "\n"
                  "--ui              Sample hotspot window. No GGUF. Does not start the hour.\n"
                  "--ui-check        Locate committed UI files and exit. No window.\n"
@@ -42,6 +32,8 @@ void usage(const char* argv0) {
                  "  --out           MLPT path (default prune_table.bin). Checkpoint every 2000.\n"
                  "  --n-predict     Tokens to generate (default 64 in tests; 20000 with --model).\n"
                  "  --stub          Tests only. Synthetic hooks, no GGUF.\n"
+                 "  --trace-off     Milestone 1: cb_eval=nullptr. Alias --no-trace.\n"
+                 "  --trace-on      Fire-tap hooks (not Milestone 1).\n"
                  "  --check-serve PATH  Print remnant_may_serve for a remnant GGUF and exit.\n",
                  argv0);
 }
@@ -116,7 +108,7 @@ int main(int argc, char** argv) {
     }
 
     if (resolve_trace_mode(parsed) == TraceCliMode::CheckServe) {
-        if (!file_exists(parsed.check_serve)) {
+        if (!host_file_exists(parsed.check_serve)) {
             std::fprintf(stderr, "error: remnant GGUF not found: %s\n", parsed.check_serve.c_str());
             return 2;
         }
@@ -153,7 +145,7 @@ int main(int argc, char** argv) {
                          "(use --stub only in tests; that does not produce a real MLPT)\n");
             return 2;
         }
-        if (!file_exists(cfg.model_path)) {
+        if (!host_file_exists(cfg.model_path)) {
             std::fprintf(stderr, "error: no weights at %s\n", cfg.model_path.c_str());
             return 2;
         }

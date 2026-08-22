@@ -4,6 +4,7 @@
 #include "micro_llm/graph_hooks.hpp"
 #include "micro_llm/hook_ring.hpp"
 #include "micro_llm/trace_cli.hpp"
+#include "micro_llm/vram_ledger.hpp"
 
 #include <cstdio>
 #include <memory>
@@ -59,17 +60,27 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     std::vector<float> hin(kHiddenDim, 0.1f);
     std::vector<float> hout(kHiddenDim, 0.1f);
 
+    const VramLedger ledger = vram_ledger_slots_first();
     const uint32_t n_park =
-        cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ffn_park_layers_that_fit();
+        cfg.n_parked_ffn != 0 ? cfg.n_parked_ffn : ledger.n_parked_ffn;
     streamer.set_n_parked_ffn(n_park);
+    streamer.ensure_slots();
     PerfClocks clocks;
     clocks.begin_session();
     clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
+    clocks.set_trace_off(!cfg.trace_hooks);
+    clocks.set_ffn_gemm(kFfnGemmPerToken, 0);
+    const SplitLedger sl = split_ledger_trace_off_cuda_ffn();
+    clocks.set_split_ledger(0, sl.buffer_type, sl.backend, sl.op);
     streamer.set_perf(&clocks);
+    std::fprintf(stderr, "%s\n", format_vram_ledger(ledger).c_str());
     std::fprintf(stderr, "%s\n",
                  format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) *
-                                                       kQ4FfnLayerBytes)
+                                                       kQ4FfnLayerBytesMeasured5080)
                      .c_str());
+    std::fprintf(stderr, "%s\n", format_split_ledger(sl).c_str());
+    std::fprintf(stderr, "%s\n", format_ffn_gemm_line(ffn_gemm_all_cuda()).c_str());
+    std::fprintf(stderr, "%s\n", format_pcie_bound_line(ffn_stream_layers(n_park)).c_str());
 
     streamer.begin_session();
     clocks.set_plan(n_park, ffn_stream_layers(n_park), streamer.host_pages_pinned());
@@ -134,6 +145,13 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
     s.perf = clocks.snapshot();
     std::fprintf(stderr, "%s\n", format_performance_line(s.perf).c_str());
     std::fprintf(stderr, "%s\n", format_performance_bottlenecks(s.perf).c_str());
+    std::fprintf(stderr, "%s\n", format_split_ledger(split_ledger_trace_off_cuda_ffn()).c_str());
+    std::fprintf(stderr, "%s\n", format_ffn_gemm_line(ffn_gemm_all_cuda()).c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_bench_line(s.perf.tok_per_sec, s.perf.prefill_s, s.perf.prefill_tok,
+                                   s.perf.host_ffn_binds, s.perf.cuda_ffn_binds,
+                                   s.perf.h2d_bytes_per_tok, kHourKvReserveBytes)
+                     .c_str());
     std::fprintf(stderr, "%s\n",
                  format_tokens_per_sec_line(s.perf.tok_per_sec, static_cast<uint32_t>(s.n_tokens),
                                             s.perf.wall_s)
@@ -161,8 +179,8 @@ LiveForwardStatus LlamaCppLiveForwardBackend::probe(const LiveForwardConfig& cfg
     }
     s.architecture_ok = gguf_looks_like_qwen27b_hybrid(meta);
     if (!s.architecture_ok) {
-        s.message = "GGUF is not Qwen 27B 3.6/3.8 hybrid (want arch qwen35, 64 layers, "
-                    "d=5120, ffn=17408); got arch='" +
+        s.message = "GGUF is not Qwen 27B 3.6/3.8 hybrid (want arch qwen35, 64 or "
+                    "65=64+MTP blocks, d=5120, ffn=17408); got arch='" +
                     meta.architecture + "' n_layer=" + std::to_string(meta.n_layers) +
                     " n_embd=" + std::to_string(meta.n_embd) +
                     " n_ff=" + std::to_string(meta.n_ff);

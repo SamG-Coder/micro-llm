@@ -30,8 +30,9 @@ enum class GraphHookSite : uint8_t {
 
 struct GraphTensorView {
     std::string name;
-    const float* data = nullptr;  // host or device
+    const float* data = nullptr;  // host or resolved device VA
     bool on_device = false;
+    bool ptr_ok = true;  // llama_cb_eval sets false when the VA is unresolved
     uint32_t ne0 = 0;  // inner dim (n_ff or n_embd)
     uint32_t ne1 = 1;  // tokens in this ubatch
 };

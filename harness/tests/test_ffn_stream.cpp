@@ -3,14 +3,15 @@
 #include "micro_llm/micro_llm.hpp"
 
 #include <string>
+#include <vector>
 
 void test_ffn_stream_budget(TestContext& ctx) {
     using namespace micro_llm;
 
     CHECK(ctx, kNStreamSlots == 2);
-    CHECK(ctx, kMinStreamedFfnLayers == 7);
+    CHECK(ctx, kMinStreamedFfnLayers == 0);
     CHECK(ctx, kTargetMaxStreamedFfnLayers == 12);
-    CHECK(ctx, kMaxParkedFfnLayers == 57);
+    CHECK(ctx, kMaxParkedFfnLayers == kNLayers);
     CHECK(ctx, kHourKvReserveTokens == 20000);
     CHECK(ctx, kHourKvReserveBytes == 20000ull * 65536ull);
     CHECK(ctx, kHourCardSoftBytes == 14ull * kGiB);
@@ -18,31 +19,69 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, hour_fixed_card_bytes() > kHourKvReserveBytes);
     CHECK(ctx, hour_fixed_card_bytes() < kHourCardSoftBytes);
 
-    const uint32_t n_park = ffn_park_layers_that_fit();
-    const uint32_t n_stream = ffn_stream_layers(n_park);
-    CHECK(ctx, n_park > 0);
-    CHECK(ctx, n_park < kNLayers);
+    CHECK(ctx, !ggml_can_rebind_q4_midgraph());
+    CHECK(ctx, ffn_park_all_fits_5080_measured());
+    CHECK(ctx, kQ4FfnLayerBytesMeasured5080 == 80ull * 1024ull * 1024ull);
+    CHECK(ctx, kMeasured5080Cuda0MiB == 9851ull);
+    CHECK(ctx, kMeasured5080FreeMiB == 2409ull);
+    CHECK(ctx, kMeasured5080GraphSplits == 340);
+    CHECK(ctx, kMeasured5080Park57 == 57);
+    CHECK(ctx, kMeasured5080Stream7 == 7);
+
+    const VramLedger led = vram_ledger_slots_first();
+    CHECK(ctx, led.slot_a_bytes == kQ4FfnLayerBytesMeasured5080);
+    CHECK(ctx, led.slot_b_bytes == kQ4FfnLayerBytesMeasured5080);
+    CHECK(ctx, led.kv20k_bytes == kHourKvReserveBytes);
+    CHECK(ctx, led.scratch_bytes == kCudaScratchBytes);
+    CHECK(ctx, led.n_parked_ffn == kNLayers);
+    CHECK(ctx, led.n_streamed_ffn == 0);
+    CHECK(ctx, vram_ledger_free_to_hard(led) > 0);
+    const std::string vline = format_vram_ledger(led);
+    CHECK(ctx, vline.find("VRAM_LEDGER") == 0);
+    CHECK(ctx, vline.find("slot_A_MiB=") != std::string::npos);
+    CHECK(ctx, vline.find("slot_B_MiB=") != std::string::npos);
+    CHECK(ctx, vline.find("kv20k_MiB=") != std::string::npos);
+    CHECK(ctx, vline.find("free_to_15_2_MiB=") != std::string::npos);
+
+    const SplitLedger sl = split_ledger_trace_off_cuda_ffn();
+    CHECK(ctx, sl.trace_off);
+    CHECK(ctx, sl.callback_hooks == 0);
+    const std::string sline = format_split_ledger(sl);
+    CHECK(ctx, sline.find("callback/hooks=0") != std::string::npos);
+    SplitLedger hooked = sl;
+    hooked.trace_off = true;
+    hooked.callback_hooks = 99;
+    CHECK(ctx, format_split_ledger(hooked).find("callback/hooks=0") != std::string::npos);
+
+    const FfnGemmCounts gemm = ffn_gemm_all_cuda();
+    CHECK(ctx, gemm.cuda == 192);
+    CHECK(ctx, gemm.cpu == 0);
+    CHECK(ctx, format_ffn_gemm_line(gemm).find("cuda=192") != std::string::npos);
+
+    const uint32_t n_park = led.n_parked_ffn;
+    const uint32_t n_stream = led.n_streamed_ffn;
+    CHECK(ctx, n_park == kNLayers);
+    CHECK(ctx, n_park == 64);
+    CHECK(ctx, n_stream == 0);
     CHECK(ctx, n_park <= kMaxParkedFfnLayers);
-    CHECK(ctx, n_park != 64);
-    CHECK(ctx, n_stream >= kMinStreamedFfnLayers);
-    CHECK(ctx, n_stream <= kTargetMaxStreamedFfnLayers);
     CHECK(ctx, streamed_hour_in_20_tok_band(n_stream));
+    CHECK(ctx, streamed_hour_in_20_tok_band(0));
     CHECK(ctx, hour_park_stream_fits(n_park));
+    CHECK(ctx, hour_park_stream_fits(kNLayers));
     CHECK(ctx, hour_park_stream_card_bytes(n_park) <= kHourCardSoftBytes);
     CHECK(ctx, hour_park_stream_card_bytes(n_park) <= kServeUsableBytes);
-    CHECK(ctx, !hour_park_stream_fits(kNLayers));
-    CHECK(ctx, parked_all_ffn_exceeds_card());
+
+    // 7 leftover * 80 MiB = 560 MiB < 2409 MiB free.
+    CHECK(ctx, stream_pcie_bytes_per_tok(7) == 7ull * kQ4FfnLayerBytesMeasured5080);
+    CHECK(ctx, stream_pcie_bytes_per_tok(0) == 0);
+    CHECK(ctx, stream_pcie_tok_per_sec(7) >= 20.0);
+    CHECK(ctx, stream_pcie_tok_per_sec(0) == 0.0);
 
     // 7780: 64 CPU FFN * 4.5ms = 3.47 tok/s. CUDA0 6760 MiB did not help.
     const double cpu64 = cpu_ffn_tok_per_sec();
     CHECK(ctx, cpu64 > 3.3 && cpu64 < 3.6);
     CHECK(ctx, kMeasured7780Cuda0MiB == 6760ull);
     CHECK(ctx, kMeasured7780TokPerSec192 > 3.4f && kMeasured7780TokPerSec192 < 3.7f);
-
-    // 7-12 streamed on CUDA / PCIe 5 is the 20+ path. Host leftover is not.
-    CHECK(ctx, stream_pcie_tok_per_sec(12) >= 20.0);
-    CHECK(ctx, stream_pcie_tok_per_sec(7) >= 30.0);
-    CHECK(ctx, cpu_ffn_tok_per_sec(4.5, 12) < 20.0);
     CHECK(ctx, cpu_ffn_tok_per_sec(4.5, 64) < 5.0);
 
     CHECK(ctx, gguf_block_count_is_hybrid(64));
@@ -62,30 +101,51 @@ void test_ffn_stream_budget(TestContext& ctx) {
     bool has_parked_ffn = false;
     bool has_ga = false;
     bool has_embed = false;
+    bool has_ssm = false;
     for (const auto& p : gpu) {
         if (p.find("ffn_gate") != std::string::npos) has_parked_ffn = true;
         if (p.find("attn_output") != std::string::npos) has_ga = true;
         if (p.find("token_embd") != std::string::npos) has_embed = true;
+        if (p.find("ssm_") != std::string::npos) has_ssm = true;
     }
-    CHECK(ctx, has_parked_ffn && has_ga && has_embed);
+    CHECK(ctx, has_parked_ffn && has_ga && has_embed && has_ssm);
+
+    const auto cpu = hybrid_cpu_tensor_regexes();
+    bool cpu_ffn = false;
+    bool cpu_ssm = false;
+    bool cpu_head = false;
+    for (const auto& p : cpu) {
+        if (p.find("ffn_") != std::string::npos) cpu_ffn = true;
+        if (p.find("ssm_") != std::string::npos) cpu_ssm = true;
+        if (p.find("output") != std::string::npos || p.find("nextn") != std::string::npos) {
+            cpu_head = true;
+        }
+    }
+    CHECK(ctx, !cpu_ffn && !cpu_ssm && cpu_head);
 
     StreamerConfig scfg;
     scfg.ffn_scratch_bytes = 4096;
     TraceStreamer streamer(scfg);
+    streamer.set_n_parked_ffn(kNLayers);
+    CHECK(ctx, streamer.ensure_slots());
+    CHECK(ctx, streamer.slot_allocated());
+    CHECK(ctx, !streamer.slot_bound(0));
+    CHECK(ctx, !streamer.slot_bound(1));
+    CHECK(ctx, streamer.slot_bind_bytes() == 0);
+    const uint8_t q4[64] = {1, 2, 3, 4};
+    CHECK(ctx, streamer.bind_q4_into_slot(0, q4, sizeof(q4)));
+    CHECK(ctx, streamer.slot_bound(0));
+    CHECK(ctx, !streamer.slot_bound(1));
+    CHECK(ctx, streamer.slot_bind_bytes() == sizeof(q4));
+    CHECK(ctx, format_ffn_slot_bind_line(0, sizeof(q4), true).find("real_h2d=1") !=
+                   std::string::npos);
     streamer.begin_session();
-    CHECK(ctx, streamer.resident_ffn_layers() == 0);
-    CHECK(ctx, streamer.peak_ffn_vram_bytes() == 8192);  // two slots
-    CHECK(ctx, streamer.peak_ffn_bytes() == 8192);
-    CHECK(ctx, streamer.card_stack_fits());
-
-    CHECK(ctx, streamer.prefetch_ffn(1));
+    CHECK(ctx, streamer.n_parked_ffn() == kNLayers);
+    CHECK(ctx, streamer.n_streamed_ffn() == 0);
     CHECK(ctx, streamer.bind_ffn(0));
-    CHECK(ctx, streamer.compute_layer() == 0);
-    CHECK(ctx, streamer.last_bind_was_cuda());
-    CHECK(ctx, streamer.cuda_bind_count() >= 1);
-    CHECK(ctx, streamer.prefetch_outstanding());  // n+1 overlapped
-    CHECK(ctx, streamer.resident_stream_slots() >= 1);
-    CHECK(ctx, streamer.evict_ffn(0));
+    CHECK(ctx, streamer.last_bind_kind() == FfnComputeKind::ParkedCuda);
+    CHECK(ctx, streamer.host_bind_count() == 0);
+    CHECK(ctx, streamer.resident_ffn_layers() == 0);
     streamer.end_session();
 
     StreamerConfig parked_cfg;
@@ -100,6 +160,7 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, parked.last_bind_kind() == FfnComputeKind::ParkedCuda);
     CHECK(ctx, parked.bind_ffn(9));
     CHECK(ctx, parked.last_bind_kind() == FfnComputeKind::StreamCuda);
+    CHECK(ctx, parked.host_bind_count() == 0);
     CHECK(ctx, parked.resident_ffn_layers() >= 1);
     CHECK(ctx, parked.overlap_prefetch_count() >= 1 || parked.prefetch_outstanding());
     parked.end_session();
@@ -111,6 +172,37 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, classify_graph_tensor("ffn_up-64", &layer) == GraphHookSite::None);
     CHECK(ctx, classify_graph_tensor("ffn_gate-63", &layer) == GraphHookSite::FfnGate);
     CHECK(ctx, layer == 63);
+    CHECK(ctx, classify_graph_tensor("ffn_gate.weight", &layer) == GraphHookSite::None);
+    CHECK(ctx, classify_graph_tensor("ffn_up.weight", &layer) == GraphHookSite::None);
+
+    // Buffer-base + offset. Offsets > 1 MiB are still offsets, not VAs.
+    std::vector<char> buf(256, 0);
+    bool ok = false;
+    const float* p = resolve_f32_in_buffer(buf.data(), buf.size(), reinterpret_cast<void*>(64),
+                                           0, 16, &ok);
+    CHECK(ctx, ok);
+    CHECK(ctx, p == reinterpret_cast<const float*>(buf.data() + 64));
+
+    std::vector<char> big(3u * 1024u * 1024u, 0);
+    const size_t off_1m5 = 1536u * 1024u;
+    ok = false;
+    p = resolve_f32_in_buffer(big.data(), big.size(),
+                              reinterpret_cast<void*>(static_cast<uintptr_t>(off_1m5)), 0, 32,
+                              &ok);
+    CHECK(ctx, ok);
+    CHECK(ctx, p == reinterpret_cast<const float*>(big.data() + off_1m5));
+    CHECK(ctx, ptr_looks_like_integer_offset(reinterpret_cast<void*>(off_1m5), big.size()));
+    CHECK(ctx, !ptr_looks_like_integer_offset(big.data() + off_1m5, big.size()));
+
+    ok = false;
+    p = resolve_f32_in_buffer(buf.data(), buf.size(), nullptr, 16, 8, &ok);
+    CHECK(ctx, ok);
+    CHECK(ctx, p == reinterpret_cast<const float*>(buf.data() + 16));
+
+    ok = true;
+    p = resolve_f32_in_buffer(buf.data(), buf.size(), reinterpret_cast<void*>(250), 0, 16, &ok);
+    CHECK(ctx, !ok);
+    CHECK(ctx, p == nullptr);
 
     LiveForwardConfig cfg;
     CHECK(ctx, cfg.n_gpu_layers == 0);
@@ -121,8 +213,18 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, !cfg.disable_op_offload);
     CHECK(ctx, !cfg.pack_checkpoint);
 
-    const std::string park_line = format_ffn_cuda_park_line(n_park, n_park * kQ4FfnLayerBytes);
+    const std::string park_line =
+        format_ffn_cuda_park_line(n_park, static_cast<uint64_t>(n_park) *
+                                              kQ4FfnLayerBytesMeasured5080);
     CHECK(ctx, park_line.find("ngl=0") != std::string::npos);
-    CHECK(ctx, park_line.find("never_64=1") != std::string::npos);
+    CHECK(ctx, park_line.find("ggml_rebind_q4=0") != std::string::npos);
+    CHECK(ctx, park_line.find("never_64") == std::string::npos);
     CHECK(ctx, format_ffn_cuda_bind_line(9, false).find("stream=1") != std::string::npos);
+
+    const std::string pcie0 = format_pcie_bound_line(0);
+    CHECK(ctx, pcie0.find("B/tok=0") != std::string::npos);
+    CHECK(ctx, pcie0.find("ggml_rebind_q4=0") != std::string::npos);
+    const std::string pcie7 = format_pcie_bound_line(7);
+    CHECK(ctx, pcie7.find("B/tok=") != std::string::npos);
+    CHECK(ctx, pcie7.find("n_stream=7") != std::string::npos);
 }

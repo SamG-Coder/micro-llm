@@ -4,10 +4,11 @@
 //
 // Pin: CUDA + 16 Gated Attention QKVO + KV (20k reserved) + embed.
 // Park as many FFN layers as fit under 14GB AFTER KV+two stream slots.
-// Stream UNPARKED FFN on CUDA: two VRAM slots, H2D of n+1 overlapped with
-// compute of n, pinned host pages, then evict. Not host ggml.
-// Never park all 64. ngl is not the pin (not 16, not 99). 15.2 is hard.
-// DeltaNet stays CPU. MTP extra block is not in this stack.
+// ggml cannot rebind a mapped Q4 tensor mid-graph (ggml_can_rebind_q4_midgraph
+// is false). Private H2D slots do not feed ggml CUDA matmul — 5080 measured
+// 340 splits, h2d_B=0, 0.52 tok/s with park=57 stream=7. Measured alternative:
+// park all 64 FFN + DeltaNet at load so the graph is one backend. Two stream
+// slots stay reserved in the card math. ngl is not the pin (not 16, not 99).
 // Do NOT pin lm_head next to embed; lm_head only at logits.
 // No mid-session shrink.
 
@@ -39,7 +40,7 @@ enum class FfnComputeKind : uint8_t {
 
 struct StreamerConfig {
     static constexpr uint32_t kPackedAlign = kTensorAlign;
-    size_t ffn_scratch_bytes = kQ4FfnLayerBytes;
+    size_t ffn_scratch_bytes = static_cast<size_t>(kQ4FfnLayerBytesMeasured5080);
     uint32_t n_layers = kNLayers;
     uint32_t n_parked_ffn = 0;  // layers [0, n) stay on CUDA. Hour sets this.
     uint32_t n_stream_slots = kNStreamSlots;
@@ -95,13 +96,23 @@ public:
     bool ffn_is_parked(uint32_t layer) const { return layer < cfg_.n_parked_ffn; }
     uint32_t next_streamed_layer(uint32_t layer) const;
     uint64_t parked_ffn_bytes() const {
-        return static_cast<uint64_t>(cfg_.n_parked_ffn) * kQ4FfnLayerBytes;
+        return static_cast<uint64_t>(cfg_.n_parked_ffn) * kQ4FfnLayerBytesMeasured5080;
     }
     uint64_t cuda_bind_count() const { return cuda_bind_count_; }
     uint64_t host_bind_count() const { return host_bind_count_; }
     uint64_t overlap_prefetch_count() const { return overlap_prefetch_count_; }
     uint64_t h2d_bytes() const { return h2d_bytes_; }
     void set_log_cuda_ffn(bool on) { cfg_.log_cuda_ffn = on; }
+
+    // Slot A/B first. cudaMalloc alone is NOT a bind. bind_q4_into_slot is.
+    bool ensure_slots();
+    bool bind_q4_into_slot(int slot, const void* host_q4, size_t bytes);
+    bool slot_allocated() const { return slots_allocated_; }
+    bool slot_bound(int slot) const {
+        return slot >= 0 && slot < kNScratch && slot_bound_[static_cast<size_t>(slot)];
+    }
+    uint64_t slot_bind_bytes() const { return slot_bind_bytes_; }
+    uint64_t slot_bytes() const { return 2u * cfg_.ffn_scratch_bytes; }
     uint64_t card_stack_bytes() const { return hour_park_stream_card_bytes(cfg_.n_parked_ffn); }
     bool card_stack_fits() const { return hour_park_stream_fits(cfg_.n_parked_ffn); }
     const uint8_t* scratch(int i) const { return scratch_[static_cast<size_t>(i)].data(); }
@@ -147,6 +158,9 @@ private:
     bool lm_head_resident_ = false;
     bool shrink_attempted_ = false;
     bool cuda_slots_ = false;
+    bool slots_allocated_ = false;
+    std::array<bool, 2> slot_bound_{{false, false}};
+    uint64_t slot_bind_bytes_ = 0;
     uint64_t cuda_bind_count_ = 0;
     uint64_t host_bind_count_ = 0;
     uint64_t overlap_prefetch_count_ = 0;

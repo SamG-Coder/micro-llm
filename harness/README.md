@@ -99,13 +99,12 @@ after EOS. `--out` writes MLPT scores; every 2000 tokens the table is
 written to `<out>.tmp` and atomically renamed to `<out>` (no mid-run pack).
 
 Hybrid pin: `n_gpu_layers=0` (CPU default). Tensor overrides put the 16
-Gated Attention QKVO blocks, embed, and parked FFN on CUDA. Not `ngl=16`
-(wrong 16 layers) and not `ngl=99` (parks the file). KV reserved to 20k
-before more park. Two Q4 stream slots; streamed FFN H2D+evict on CUDA
-with n+1 overlapped. Flash-attn stays off (FA + CPU FFN split AVs).
-`op_offload` is on so streamed FFN hits ggml CUDA kernels — it is not
-how we park. `n_batch=512`, `n_ubatch=32`. GPU accumulators; host gets
-the ~140KB bitset only. PERFORMANCE lines on stderr.
+Gated Attention QKVO blocks, embed, **all FFN**, and DeltaNet on CUDA so
+MUL_MAT is a CUDA GEMM. Not `ngl=16` (wrong 16 layers) and not `ngl=99`
+(parks the file). KV reserved to 20k, then slot A + slot B, then leftover
+under 14 is parked FFN. `--trace-off` / `--no-trace` sets `cb_eval=nullptr`
+(SPLIT_LEDGER `callback/hooks=0`). Flash-attn stays off. `n_batch=512`,
+`n_ubatch=32`. VRAM_LEDGER / FFN_GEMM / BENCH lines on stderr.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
 to the exe). The page is a dark star field: quiet token streaks + dim glyphs,
@@ -155,10 +154,10 @@ cmake -S harness -B harness/build \
 cmake --build harness/build -j
 ```
 
-3. Run the hour. Hybrid pin: ngl=0, 16 GA + parked FFN + embed on CUDA,
-   streamed FFN on two VRAM slots (H2D overlap), DeltaNet + lm_head host.
-   Window opens on Windows. Decode is on a worker thread. UI reads the
-   lock-free ring at 60Hz. Do not start the hour on a VM without the 5080.
+3. Run the hour. Hybrid pin: ngl=0, 16 GA + all FFN + DeltaNet + embed on
+   CUDA. Slots A/B reserved first. `--trace-off` for Milestone 1 (no
+   cb_eval). Window opens on Windows. Do not start the hour on a VM
+   without the 5080.
 
 ```bash
 ./harness/build/micro-llm-trace \

@@ -20,6 +20,8 @@ void test_graph_hook_names(TestContext& ctx) {
     CHECK(ctx, classify_graph_tensor("model.input_embed", &layer) == GraphHookSite::InputEmbed);
     CHECK(ctx, classify_graph_tensor("result_output", &layer) == GraphHookSite::Logits);
     CHECK(ctx, classify_graph_tensor("attn_norm-1", &layer) == GraphHookSite::None);
+    CHECK(ctx, classify_graph_tensor("ffn_gate.weight", &layer) == GraphHookSite::None);
+    CHECK(ctx, classify_graph_tensor("ffn_up.weight", &layer) == GraphHookSite::None);
 
     StreamerConfig scfg;
     scfg.ffn_scratch_bytes = 4096;

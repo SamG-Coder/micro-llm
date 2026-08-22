@@ -333,7 +333,7 @@ bool gguf_looks_like_qwen27b_hybrid(const GgufKv& m) {
     if (!arch_ok && m.architecture.find("qwen3") == std::string::npos) {
         return false;
     }
-    if (m.n_layers != 0 && m.n_layers != kNLayers) {
+    if (m.n_layers != 0 && !gguf_block_count_is_hybrid(m.n_layers)) {
         return false;
     }
     if (m.n_embd != 0 && m.n_embd != kHiddenDim) {

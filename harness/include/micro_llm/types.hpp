@@ -26,15 +26,25 @@ inline constexpr uint32_t kWeakKeepMinRecover27B = 10496; // 40% recover floor; 
 // 10445 = ceil(17408*0.60) is NOT valid — not a Q4_K superblock multiple.
 inline constexpr uint32_t kQ4FfnLayerBytes = 150u * 1024u * 1024u;
 inline constexpr uint32_t kDoubleBufferPeakBytes = 300u * 1024u * 1024u;
-// Two Q4 stream slots. Team lock quotes ~160MB measured; budget uses two
-// full Q4_K layers (300MB) so a real gate+up+down actually fits. Never
-// park all 64. Stream 7-12 layers — that is the >=20 tok/s path.
+// 5080: CUDA0 9851 MiB with 57 FFN parked ⇒ ~80 MiB/layer (not 150).
+// 7 leftover * 80 MiB = 560 MiB < 2409 MiB free. All 64 FFN fit.
+inline constexpr uint64_t kQ4FfnLayerBytesMeasured5080 = 80ull * 1024ull * 1024ull;
+inline constexpr uint64_t kMeasured5080Cuda0MiB = 9851ull;
+inline constexpr uint64_t kMeasured5080FreeMiB = 2409ull;
+inline constexpr uint32_t kMeasured5080GraphSplits = 340;
+inline constexpr float kMeasured5080TokPerSecCbOff = 0.52f;
+inline constexpr uint32_t kMeasured5080Park57 = 57;
+inline constexpr uint32_t kMeasured5080Stream7 = 7;
+// Two Q4 stream slots reserved (~160MB pair). ggml cannot rebind a mapped
+// Q4 tensor mid-graph, so streamed layers left on host ggml split the
+// graph (340 splits, 0.52 tok/s). Measured alternative: park all 64 FFN
+// + DeltaNet on CUDA at load so the graph is one backend.
 inline constexpr uint32_t kNStreamSlots = 2;
 inline constexpr uint32_t kStreamSlotPairBudgetBytes = 160u * 1024u * 1024u;
-inline constexpr uint32_t kStreamWorkspaceBytes = kNStreamSlots * kQ4FfnLayerBytes;
-inline constexpr uint32_t kMinStreamedFfnLayers = 7;
+inline constexpr uint32_t kStreamWorkspaceBytes = kStreamSlotPairBudgetBytes;
+inline constexpr uint32_t kMinStreamedFfnLayers = 0;
 inline constexpr uint32_t kTargetMaxStreamedFfnLayers = 12;
-inline constexpr uint32_t kMaxParkedFfnLayers = kNLayers - kMinStreamedFfnLayers;  // 57
+inline constexpr uint32_t kMaxParkedFfnLayers = kNLayers;  // 64 fit at 80 MiB/layer
 // Extra GGUF block (block_count=65, nextn_predict_layers=1) is MTP.
 inline constexpr uint32_t kMtpExtraBlocks = 1;
 inline constexpr uint32_t kFloorBitsetBytes =
@@ -139,12 +149,13 @@ inline constexpr uint64_t hour_fixed_card_bytes(
 
 inline constexpr uint32_t ffn_park_layers_that_fit(
     uint64_t card = kHourCardSoftBytes,
-    uint64_t stream_workspace = kStreamWorkspaceBytes) {
+    uint64_t stream_workspace = kStreamWorkspaceBytes,
+    uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080) {
     const uint64_t need = hour_fixed_card_bytes(stream_workspace);
-    if (need >= card) {
+    if (need >= card || layer_bytes == 0) {
         return 0;
     }
-    uint32_t n = static_cast<uint32_t>((card - need) / kQ4FfnLayerBytes);
+    uint32_t n = static_cast<uint32_t>((card - need) / layer_bytes);
     if (n > kMaxParkedFfnLayers) {
         n = kMaxParkedFfnLayers;
     }
@@ -155,24 +166,44 @@ inline constexpr uint32_t ffn_stream_layers(uint32_t n_park = ffn_park_layers_th
     return n_park >= kNLayers ? 0u : (kNLayers - n_park);
 }
 
-inline constexpr uint64_t hour_park_stream_card_bytes(uint32_t n_park) {
-    return hour_fixed_card_bytes() + static_cast<uint64_t>(n_park) * kQ4FfnLayerBytes;
+inline constexpr uint64_t hour_park_stream_card_bytes(
+    uint32_t n_park, uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080) {
+    return hour_fixed_card_bytes() + static_cast<uint64_t>(n_park) * layer_bytes;
 }
 
-inline constexpr bool hour_park_stream_fits(uint32_t n_park) {
-    const uint64_t stack = hour_park_stream_card_bytes(n_park);
-    return n_park < kNLayers && n_park <= kMaxParkedFfnLayers &&
-           stack <= kHourCardSoftBytes && stack <= kServeUsableBytes;
+inline constexpr bool hour_park_stream_fits(
+    uint32_t n_park, uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080) {
+    const uint64_t stack = hour_park_stream_card_bytes(n_park, layer_bytes);
+    return n_park <= kMaxParkedFfnLayers && stack <= kHourCardSoftBytes &&
+           stack <= kServeUsableBytes;
 }
 
+// Paper 150 MiB * 64 is a conservative weight guess. 5080 measured ~80 MiB
+// and 7 leftover layers fit in 2409 MiB free, so all 64 FFN park.
 inline constexpr bool parked_all_ffn_exceeds_card(
     uint32_t n_ffn_layers = kNLayers,
-    uint64_t usable = kServeUsableBytes) {
-    return hour_park_stream_card_bytes(n_ffn_layers) > usable || n_ffn_layers >= kNLayers;
+    uint64_t usable = kServeUsableBytes,
+    uint64_t layer_bytes = kQ4FfnLayerBytes) {
+    return hour_park_stream_card_bytes(n_ffn_layers, layer_bytes) > usable;
 }
 
+inline constexpr bool ffn_park_all_fits_5080_measured() {
+    const uint64_t extra7 = static_cast<uint64_t>(kNLayers - kMeasured5080Park57) *
+                            kQ4FfnLayerBytesMeasured5080;
+    return hour_park_stream_fits(kNLayers, kQ4FfnLayerBytesMeasured5080) &&
+           extra7 <= kMeasured5080FreeMiB * 1024ull * 1024ull;
+}
+
+inline constexpr uint64_t stream_pcie_bytes_per_tok(
+    uint32_t n_stream, uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080) {
+    return static_cast<uint64_t>(n_stream) * layer_bytes;
+}
+
+// 0 streamed = all FFN resident CUDA (5080 measured alternative). 7-12 is
+// only the 20+ path if those layers actually run on ggml CUDA (they did not).
 inline constexpr bool streamed_hour_in_20_tok_band(uint32_t n_stream) {
-    return n_stream >= kMinStreamedFfnLayers && n_stream <= kTargetMaxStreamedFfnLayers;
+    return n_stream == 0 ||
+           (n_stream >= 7 && n_stream <= kTargetMaxStreamedFfnLayers);
 }
 
 // Hook ring is 64. block_count=65 is 64 + MTP; do not count the extra block.
@@ -195,12 +226,13 @@ inline constexpr double cpu_ffn_tok_per_sec(double ms_per_layer = kCpuFfnMsPerLa
 }
 
 // Streamed FFN H2D only. Parked layers are GDDR-resident (not this bound).
-// 12 * 150MiB / 50 GB/s ≈ 36ms → ~28 tok/s. 7 layers → ~47 tok/s.
-// If those layers stay on host ggml, 12 * 4.5ms = 18.5 tok/s — not the 20+ path.
+// 7 * 80MiB / 50 GB/s ≈ 11ms → ~89 tok/s PCIe ceiling. ggml cannot rebind
+// those Q4 tensors mid-graph, so the 7 stayed on host (340 splits, 0.52).
+// n_stream=0: B/tok=0; 20 tok/s is CUDA Q4 compute, not PCIe.
 inline constexpr double stream_pcie_tok_per_sec(
     uint32_t n_stream,
     double gbs = kPcie5PracticalGBs,
-    uint64_t layer_bytes = kQ4FfnLayerBytes) {
+    uint64_t layer_bytes = kQ4FfnLayerBytesMeasured5080) {
     const double gb = static_cast<double>(n_stream) * static_cast<double>(layer_bytes) / 1.0e9;
     return gb > 0.0 ? gbs / gb : 0.0;
 }

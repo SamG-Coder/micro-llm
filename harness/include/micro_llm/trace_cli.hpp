@@ -32,6 +32,8 @@ struct TraceCliArgs {
     bool n_predict_set = false;
     bool help = false;
     bool parse_error = false;
+    bool trace_off_set = false;
+    bool trace_on_set = false;
     std::string check_serve;
 };
 
@@ -78,5 +80,6 @@ uint64_t streamed_ffn_workspace_bytes();
 uint32_t hybrid_ffn_park_layers();
 std::string format_ffn_cuda_park_line(uint32_t n_park, uint64_t bytes);
 std::string format_ffn_cuda_bind_line(uint32_t layer, bool parked);
+std::string format_ffn_slot_bind_line(int slot, uint64_t bytes, bool real_h2d);
 
 }  // namespace micro_llm

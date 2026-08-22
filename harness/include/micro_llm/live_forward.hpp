@@ -38,9 +38,11 @@ struct LiveForwardConfig {
     // ggml CUDA after H2D. Not the park mechanism (that's tensor overrides).
     bool disable_op_offload = false;
     bool pack_checkpoint = false;  // scores only; never pack the ~18MB MLPT
+    // Milestone 1: hooks off. --trace-off / --no-trace => cb_eval=nullptr.
+    bool trace_hooks = false;
     // ngl is not the pin. 0 = CPU default. Not 16, not 99.
     int32_t n_gpu_layers = 0;
-    uint32_t n_parked_ffn = 0;  // 0 = use ffn_park_layers_that_fit()
+    uint32_t n_parked_ffn = 0;  // 0 = leftover after slots A/B + KV 20k
     std::function<void(const uint8_t* rec, size_t nbytes)> on_htr1;
     std::function<void(const PerfSnapshot&)> on_stats;
     std::atomic<bool>* abort = nullptr;

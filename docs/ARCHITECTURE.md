@@ -83,9 +83,9 @@ Keep anything that showed up in the prompt, the output, or the top-k logits, plu
 
 Streaming run, not a resident one. ngl=0. Tensor overrides, not ngl=99.
 
-Pin: CUDA, the 16 Gated Attention QKVO blocks, embed. **Reserve KV to 20k (~1.3GB at 64KB/tok) before more park.** Two Q4 stream slots. Soft 14GB, hard 15.2. Never all 64 FFN. lm_head only at logits.
+Pin: CUDA, the 16 Gated Attention QKVO blocks, embed. **Reserve KV to 20k (~1.3GB at 64KB/tok) before more park.** Allocate slot A and slot B FIRST (two Q4 layer buffers), then fill leftover under 14 with parked FFN. Park weights, not KV. Soft 14GB, hard 15.2. lm_head only at logits.
 
-Fill leftover under 14 with parked FFN. Stream the rest on CUDA (H2D + evict), not host ggml. 7-12 streamed layers is the >=20 tok/s path. Overlap transfer of n+1 with compute of n. Host pages pinned.
+A static ggml graph cannot share two VRAM slots across N mapped Q4 tensors mid-graph (`ggml_can_rebind_q4_midgraph=false`). 5080 measured park=57 stream=7 with unused cudaMalloc slots: CUDA0 9851 MiB, h2d_B=0, cuda_ffn_binds=0, hundreds of splits, 0.96 tok/s (worse than 7780 ~3.55). Milestone 1: `--trace-off` (`cb_eval=nullptr`, `callback/hooks=0`), assign every FFN + DeltaNet to the CUDA buffer the GEMM uses, print VRAM/SPLIT/FFN_GEMM/BENCH ledgers.
 
 7780 measured CUDA0 model 6760 MiB and 3.55 / 3.37 tok/s because unparked FFN still ran on CPU (64 * ~4.5ms ≈ 3.5 tok/s). Parking weights without CUDA compute does not move the needle.
 
@@ -117,9 +117,9 @@ Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
 ## Hybrid CUDA hour (pin, don't ngl)
 
-llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). We do not use it. `n_gpu_layers = 99` puts tensors on CUDA by default. Tensor buffer overrides pull FFN (`ffn_gate` / `ffn_up` / `ffn_down`) and DeltaNet (`ssm_*`, `attn_qkv`, `attn_gate`) to CPU. Gated Attention on layers 3,7,11,...,63 plus KV stay CUDA. Do not load the host GGUF onto the 5080.
+llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). We do not use it. `n_gpu_layers = 0` plus tensor overrides put FFN, DeltaNet, 16 GA, and embed on CUDA. Host keeps MTP + `lm_head`. Do not load the host GGUF onto the 5080.
 
-Flash-attn + CPU FFN split has AVed; the hour disables FA and `op_offload`. `n_batch=512`, `n_ubatch=32`. Hooks D2H CUDA F32 activations — never read a device pointer as host.
+Flash-attn + CPU FFN split has AVed; the hour disables FA. `--trace-off` leaves `cb_eval` null. `n_batch=512`, `n_ubatch=32`.
 
 Live card stack on the hotspot bar is pinned GA weights + ~0.9 CUDA + KV. Not the labeled 10.8 sample, not the host file size.
 

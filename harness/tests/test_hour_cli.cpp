@@ -18,18 +18,29 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, hybrid_n_gpu_layers() == 0);
     CHECK(ctx, hybrid_n_gpu_layers() != 16);
     CHECK(ctx, hybrid_n_gpu_layers() != 99);
-    const auto pats = hybrid_cpu_tensor_regexes();
-    bool has_gate = false, has_up = false, has_down = false, has_ssm = false;
+    const auto cpu = hybrid_cpu_tensor_regexes();
+    bool cpu_ffn = false, cpu_ssm = false, cpu_head = false;
     bool has_wrong_ngl = false;
-    for (const auto& p : pats) {
-        if (p.find("ffn_gate") != std::string::npos) has_gate = true;
-        if (p.find("ffn_up") != std::string::npos) has_up = true;
-        if (p.find("ffn_down") != std::string::npos) has_down = true;
-        if (p.find("ssm_") != std::string::npos) has_ssm = true;
+    for (const auto& p : cpu) {
+        if (p.find("ffn_gate") != std::string::npos || p.find("ffn_up") != std::string::npos ||
+            p.find("ffn_down") != std::string::npos) {
+            cpu_ffn = true;
+        }
+        if (p.find("ssm_") != std::string::npos) cpu_ssm = true;
+        if (p.find("output") != std::string::npos || p.find("nextn") != std::string::npos) {
+            cpu_head = true;
+        }
         if (p.find("ngl") != std::string::npos || p == "16") has_wrong_ngl = true;
     }
-    CHECK(ctx, has_gate && has_up && has_down && has_ssm);
+    CHECK(ctx, !cpu_ffn && !cpu_ssm && cpu_head);
     CHECK(ctx, !has_wrong_ngl);
+    const auto gpu = hybrid_gpu_tensor_regexes();
+    bool gpu_ffn = false, gpu_ssm = false;
+    for (const auto& p : gpu) {
+        if (p.find("ffn_gate") != std::string::npos) gpu_ffn = true;
+        if (p.find("ssm_") != std::string::npos) gpu_ssm = true;
+    }
+    CHECK(ctx, gpu_ffn && gpu_ssm);
     CHECK(ctx, pinned_ga_weight_bytes() > 0);
     CHECK(ctx, pinned_ga_weight_bytes() < kGiB);  // card stack, not 15.3GB host GGUF
 
@@ -62,6 +73,24 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, a2.cfg.disable_flash_attn);
     CHECK(ctx, !a2.cfg.disable_op_offload);
     CHECK(ctx, !a2.cfg.load_mtp);
+    CHECK(ctx, !a2.cfg.trace_hooks);
+
+    char notrace[] = "--no-trace";
+    char* off_args[] = {const_cast<char*>("micro-llm-trace"), model, path, notrace, nullptr};
+    const TraceCliArgs a_off = parse_trace_cli(4, off_args);
+    CHECK(ctx, !a_off.cfg.trace_hooks);
+    CHECK(ctx, a_off.trace_off_set);
+
+    char toff[] = "--trace-off";
+    char* toff_args[] = {const_cast<char*>("micro-llm-trace"), model, path, toff, nullptr};
+    const TraceCliArgs a_toff = parse_trace_cli(4, toff_args);
+    CHECK(ctx, !a_toff.cfg.trace_hooks);
+
+    char ton[] = "--trace-on";
+    char* ton_args[] = {const_cast<char*>("micro-llm-trace"), model, path, ton, nullptr};
+    const TraceCliArgs a_on = parse_trace_cli(4, ton_args);
+    CHECK(ctx, a_on.cfg.trace_hooks);
+    CHECK(ctx, a_on.trace_on_set);
 
     char* both[] = {const_cast<char*>("micro-llm-trace"), ui, model, path, nullptr};
     const TraceCliArgs a3 = parse_trace_cli(4, both);

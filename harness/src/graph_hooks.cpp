@@ -61,11 +61,15 @@ GraphHookSite classify_graph_tensor(std::string_view name, int* layer_out) {
     if (stem == "ffn_gate_par" || starts_with(stem, "ffn_gate_par")) {
         return GraphHookSite::FfnGatePar;
     }
-    if (stem == "ffn_gate" || stem == "ffn_gate.weight") {
+    // Activations only (ffn_gate-L). Weights (ffn_gate.weight) are Q4.
+    if (stem == "ffn_gate") {
         return GraphHookSite::FfnGate;
     }
-    if (stem == "ffn_up" || stem == "ffn_up.weight") {
+    if (stem == "ffn_up") {
         return GraphHookSite::FfnUp;
+    }
+    if (starts_with(stem, "ffn_gate.") || starts_with(stem, "ffn_up.")) {
+        return GraphHookSite::None;
     }
     if (stem == "attn_residual") {
         return GraphHookSite::AttnResidual;
@@ -128,7 +132,7 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
         }
         return true;
     }
-    if (!t.data || t.ne0 == 0) {
+    if (!t.ptr_ok || !t.data || t.ne0 == 0) {
         return false;
     }
 
@@ -142,7 +146,7 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
 
     if (site == GraphHookSite::FfnGate && layer >= 0) {
         const uint32_t n = t.ne0 < kFfnIntermediate ? t.ne0 : kFfnIntermediate;
-        if (t.on_device) {
+        if (t.on_device && t.ptr_ok) {
             pending_gate_device_ = true;
             pending_gate_layer_ = layer;
             // Keep the live pointer in pending_gate_ via a side channel: we
@@ -170,7 +174,7 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
             const float* up = t.data + static_cast<size_t>(col) * t.ne0;
             const uint32_t n = t.ne0 < kFfnIntermediate ? t.ne0 : kFfnIntermediate;
             bool ok = false;
-            if (t.on_device && pending_gate_device_ && device_gate_) {
+            if (t.on_device && t.ptr_ok && pending_gate_device_ && device_gate_) {
                 ok = hooks_.on_ffn_activations_device(static_cast<uint32_t>(layer),
                                                       device_gate_ + static_cast<size_t>(col) * device_gate_n_,
                                                       up, n);
@@ -188,6 +192,10 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
 
     if (site == GraphHookSite::AttnResidual && layer >= 0 &&
         is_delta_net_layer(static_cast<uint32_t>(layer))) {
+        if (t.on_device) {
+            // Pack score needs host hidden. Do not memcpy a device VA.
+            return true;
+        }
         const uint32_t ntok = t.ne1 == 0 ? 1u : t.ne1;
         for (uint32_t col = 0; col < ntok; ++col) {
             const float* hout = t.data + static_cast<size_t>(col) * t.ne0;

@@ -12,7 +12,11 @@ void test_perf_clocks(TestContext& ctx) {
 
     PerfClocks clocks;
     clocks.begin_session();
-    clocks.set_plan(57, 7, true);
+    clocks.set_plan(64, 0, true);
+    clocks.set_trace_off(true);
+    clocks.set_ffn_gemm(192, 0);
+    clocks.set_prefill(1.25, 41);
+    clocks.set_split_ledger(99, 1, 1, 1);
     clocks.begin_span(PerfSpan::Gpu);
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
     clocks.end_span(PerfSpan::Gpu);
@@ -26,8 +30,8 @@ void test_perf_clocks(TestContext& ctx) {
 
     const PerfSnapshot s = clocks.snapshot();
     CHECK(ctx, s.n_tokens == 1);
-    CHECK(ctx, s.n_parked_ffn == 57);
-    CHECK(ctx, s.n_streamed_ffn == 7);
+    CHECK(ctx, s.n_parked_ffn == 64);
+    CHECK(ctx, s.n_streamed_ffn == 0);
     CHECK(ctx, s.h2d_bytes_per_tok == 150ull * 1024ull * 1024ull);
     CHECK(ctx, s.d2h_bytes_per_tok == kFloorBitsetBytes);
     CHECK(ctx, s.d2h_bytes_per_tok < 200000);  // ~140KB, not 17408*4*64
@@ -35,6 +39,11 @@ void test_perf_clocks(TestContext& ctx) {
     CHECK(ctx, s.host_ffn_binds == 0);
     CHECK(ctx, s.gpu_ms > 0.0);
     CHECK(ctx, s.host_pages_pinned);
+    CHECK(ctx, s.trace_off);
+    CHECK(ctx, s.split_callback_hooks == 0);  // trace-off forces hooks=0
+    CHECK(ctx, s.ffn_cuda_gemm == 192);
+    CHECK(ctx, s.ffn_cpu_gemm == 0);
+    CHECK(ctx, s.prefill_tok == 41);
 
     const std::string line = format_performance_line(s);
     CHECK(ctx, line.find("PERFORMANCE") == 0);
@@ -46,6 +55,20 @@ void test_perf_clocks(TestContext& ctx) {
 
     const std::string bots = format_performance_bottlenecks(s);
     CHECK(ctx, bots.find("PERFORMANCE bottlenecks=") == 0);
+    CHECK(ctx, bots.find("splits=") != std::string::npos);
+    CHECK(ctx, line.find("splits=") != std::string::npos);
+
+    clocks.begin_decode();
+    clocks.note_backend(false);
+    clocks.note_backend(true);
+    clocks.note_backend(false);
+    CHECK(ctx, clocks.graph_splits() == 2);
+    clocks.begin_decode();
+    CHECK(ctx, clocks.graph_splits() == 0);
+
+    PerfSnapshot splits;
+    splits.graph_splits = 340;
+    CHECK(ctx, std::string(top_bottleneck(splits)) == "graph_splits");
 
     PerfSnapshot host;
     host.host_ffn_binds = 64;

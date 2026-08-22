@@ -67,6 +67,16 @@ bool TraceStreamer::ensure_scratch() {
             scratch_[static_cast<size_t>(i)].assign(cfg_.ffn_scratch_bytes, 0);
         }
     }
+    ensure_slots();
+    return true;
+}
+
+bool TraceStreamer::ensure_slots() {
+    for (int i = 0; i < kNScratch; ++i) {
+        if (scratch_[static_cast<size_t>(i)].size() != cfg_.ffn_scratch_bytes) {
+            scratch_[static_cast<size_t>(i)].assign(cfg_.ffn_scratch_bytes, 0);
+        }
+    }
 #if defined(MICRO_LLM_HAS_CUDA)
     if (!cuda_slots_ && cfg_.stream_compute_cuda) {
         bool ok = true;
@@ -86,6 +96,51 @@ bool TraceStreamer::ensure_scratch() {
         }
     }
 #endif
+    slots_allocated_ = true;
+    return slots_allocated_;
+}
+
+bool TraceStreamer::bind_q4_into_slot(int slot, const void* host_q4, size_t bytes) {
+    if (slot < 0 || slot >= kNScratch || !host_q4 || bytes == 0) {
+        return false;
+    }
+    ensure_slots();
+    const size_t copy_n = bytes < cfg_.ffn_scratch_bytes ? bytes : cfg_.ffn_scratch_bytes;
+    if (perf_) {
+        perf_->begin_span(PerfSpan::Pcie);
+    }
+#if defined(MICRO_LLM_HAS_CUDA)
+    if (d_slot_[static_cast<size_t>(slot)]) {
+        const cudaError_t rc =
+            cudaMemcpy(d_slot_[static_cast<size_t>(slot)], host_q4, copy_n, cudaMemcpyHostToDevice);
+        if (rc != cudaSuccess) {
+            if (perf_) {
+                perf_->end_span(PerfSpan::Pcie);
+            }
+            return false;
+        }
+    } else
+#endif
+    {
+        auto& dst = scratch_[static_cast<size_t>(slot)];
+        if (dst.size() < copy_n) {
+            if (perf_) {
+                perf_->end_span(PerfSpan::Pcie);
+            }
+            return false;
+        }
+        std::memcpy(dst.data(), host_q4, copy_n);
+    }
+    h2d_bytes_ += copy_n;
+    slot_bind_bytes_ += copy_n;
+    slot_bound_[static_cast<size_t>(slot)] = true;
+    if (perf_) {
+        perf_->add_h2d(copy_n);
+        perf_->end_span(PerfSpan::Pcie);
+        perf_->add_cuda_ffn_bind();
+    }
+    ++cuda_bind_count_;
+    last_bind_kind_ = FfnComputeKind::StreamCuda;
     return true;
 }
 
@@ -187,6 +242,9 @@ void TraceStreamer::begin_session() {
     host_bind_count_ = 0;
     overlap_prefetch_count_ = 0;
     h2d_bytes_ = 0;
+    slot_bind_bytes_ = 0;
+    slot_bound_[0] = false;
+    slot_bound_[1] = false;
     last_bind_kind_ = FfnComputeKind::HostGgml;
     slot_layer_[0] = ~0u;
     slot_layer_[1] = ~0u;
