@@ -1,4 +1,4 @@
-// Canvas sprites for outgoing words/ids. Real sampled tokens only.
+// Dim streak glyphs for outgoing words/ids. Real sampled tokens only.
 
 import * as THREE from "three";
 import { rarityGlow } from "./constants.js";
@@ -15,18 +15,16 @@ export function glyphLabel(word) {
 function paintGlyphCanvas(text, rare) {
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
-  const fontPx = 72;
-  ctx.font = `700 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
-  const w = Math.ceil(ctx.measureText(text).width) + 48;
-  canvas.width = Math.max(128, w);
-  canvas.height = 128;
-  ctx.font = `700 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  const fontPx = 36;
+  ctx.font = `500 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
+  const w = Math.ceil(ctx.measureText(text).width) + 24;
+  canvas.width = Math.max(64, w);
+  canvas.height = 48;
+  ctx.font = `500 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  const glow = 0.35 + rare * 0.65;
-  ctx.shadowColor = `rgba(80, 255, 230, ${0.35 + glow * 0.45})`;
-  ctx.shadowBlur = 18 + glow * 22;
-  ctx.fillStyle = `rgba(190, 255, 248, ${0.72 + glow * 0.28})`;
+  const a = 0.38 + rare * 0.22;
+  ctx.fillStyle = `rgba(168, 184, 204, ${a})`;
   ctx.fillText(text, canvas.width / 2, canvas.height / 2);
   return canvas;
 }
@@ -50,13 +48,25 @@ export function makeGlyphSprite(word, id) {
     map: glyphTexture(text, rare),
     transparent: true,
     depthWrite: false,
-    blending: THREE.AdditiveBlending,
+    blending: THREE.NormalBlending,
     opacity: 0,
   });
   const sprite = new THREE.Sprite(mat);
-  const width = Math.max(1.15, Math.min(3.6, text.length * 0.38));
-  sprite.scale.set(width, 0.85, 1);
+  const width = Math.max(0.42, Math.min(1.15, text.length * 0.13));
+  sprite.scale.set(width, 0.28, 1);
   sprite.userData.rare = rare;
   sprite.userData.text = text;
   return sprite;
+}
+
+export function makeStreakMesh() {
+  const geo = new THREE.BoxGeometry(0.018, 0.018, 0.72);
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0x7a8ea3,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  return mesh;
 }

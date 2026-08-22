@@ -1,8 +1,5 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
-import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import {
   FFN_BINS_PER_LAYER,
   N_GROUPS,
@@ -14,7 +11,7 @@ import {
   rarityGlow,
   vocabBinIndex,
 } from "./constants.js";
-import { makeGlyphSprite } from "./glyphs.js";
+import { makeGlyphSprite, makeStreakMesh } from "./glyphs.js";
 import { packSpikeBit } from "./ring.js";
 
 const FFN_COUNT = N_LAYERS * FFN_BINS_PER_LAYER;
@@ -23,7 +20,7 @@ const GROUP_GAP = 0.38;
 const FFN_R = 5.1;
 const PACK_R = 2.35;
 const VOCAB_R = 6.2;
-const MAX_FLYERS = 22;
+const MAX_FLYERS = 28;
 
 function layerY(layer) {
   const group = Math.floor(layer / 4);
@@ -56,89 +53,98 @@ function bezier3(a, b, c, t) {
   return u * u * a + 2 * u * t * b + t * t * c;
 }
 
+function addStarField(scene) {
+  const n = 3200;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const r = 48 + Math.random() * 70;
+    pos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    pos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    pos[i * 3 + 2] = r * Math.cos(phi);
+    const w = 0.45 + Math.random() * 0.45;
+    col[i * 3] = w * 0.86;
+    col[i * 3 + 1] = w * 0.9;
+    col[i * 3 + 2] = w;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const stars = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      size: 0.055,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+    }),
+  );
+  scene.add(stars);
+  return { geo, stars };
+}
+
 export function createMap(container, { presentBins = null, presentPacks = null } = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setClearColor(0x04050a, 1);
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.12;
+  renderer.setClearColor(0x010208, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x04050a, 0.028);
+  const stars = addStarField(scene);
 
   const towerH = layerY(N_LAYERS - 1);
-  const camera = new THREE.PerspectiveCamera(52, 1, 0.1, 120);
-  camera.position.set(8.6, 1.8, 11.4);
+  const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 200);
+  camera.position.set(9.2, 3.4, 12.6);
 
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, towerH * 0.42, 0);
   controls.enableDamping = true;
   controls.autoRotate = true;
-  controls.autoRotateSpeed = 0.42;
-  controls.maxDistance = 36;
-  controls.minDistance = 5;
+  controls.autoRotateSpeed = 0.14;
+  controls.maxDistance = 42;
+  controls.minDistance = 6;
   controls.maxPolarAngle = Math.PI * 0.78;
   controls.minPolarAngle = Math.PI * 0.18;
 
-  scene.add(new THREE.AmbientLight(0x4a5366, 0.28));
-  const key = new THREE.DirectionalLight(0xc8d6ea, 0.35);
-  key.position.set(10, 22, 8);
+  scene.add(new THREE.AmbientLight(0x6a7380, 0.16));
+  const key = new THREE.DirectionalLight(0x9aa8b8, 0.12);
+  key.position.set(8, 18, 10);
   scene.add(key);
-
-  const well = new THREE.PointLight(0x2ee6d6, 2.4, 28);
-  well.position.set(0, towerH * 0.5, 0);
-  scene.add(well);
 
   const dummy = new THREE.Object3D();
   const tmpColor = new THREE.Color();
   const look = new THREE.Vector3();
 
-  const floor = new THREE.Mesh(
-    new THREE.CylinderGeometry(7.4, 7.4, 0.06, 64),
-    new THREE.MeshStandardMaterial({ color: 0x0a0d14, roughness: 0.92, metalness: 0.05 }),
-  );
-  floor.position.y = -1.85;
-  scene.add(floor);
-
   const shaft = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.16, 0.16, towerH + 2.4, 20),
+    new THREE.CylinderGeometry(0.07, 0.07, towerH + 2.2, 12),
     new THREE.MeshBasicMaterial({
-      color: 0x145e58,
+      color: 0x1a2a30,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.28,
     }),
   );
   shaft.position.y = towerH * 0.5;
   scene.add(shaft);
 
-  const shaftCore = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.06, 0.06, towerH + 2.6, 12),
-    new THREE.MeshBasicMaterial({
-      color: 0x7ff6ec,
-      transparent: true,
-      opacity: 0.7,
-    }),
-  );
-  shaftCore.position.y = towerH * 0.5;
-  scene.add(shaftCore);
-
   const groupRingMat = new THREE.MeshBasicMaterial({
-    color: 0x1a3040,
+    color: 0x121820,
     transparent: true,
-    opacity: 0.35,
+    opacity: 0.22,
     side: THREE.DoubleSide,
   });
   for (let g = 0; g < N_GROUPS; g++) {
     const y = (layerY(g * 4) + layerY(g * 4 + 3)) / 2;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(FFN_R + 0.15, 0.012, 8, 72), groupRingMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(FFN_R + 0.12, 0.008, 6, 64), groupRingMat);
     ring.rotation.x = Math.PI / 2;
     ring.position.y = y;
     scene.add(ring);
   }
 
-  const packGeo = new THREE.OctahedronGeometry(0.3, 0);
+  const packGeo = new THREE.OctahedronGeometry(0.22, 0);
   const packMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const packs = new THREE.InstancedMesh(packGeo, packMat, N_PACKS);
   packs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -149,41 +155,35 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     dummy.position.set(xz.x, layerY(layer), xz.z);
     const shown = !presentPacks || presentPacks[p];
     dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
-    dummy.rotation.set(0.25, 0.4, 0.1);
+    dummy.rotation.set(0.2, 0.3, 0.08);
     dummy.updateMatrix();
     packs.setMatrixAt(p, dummy.matrix);
-    packs.setColorAt(p, hex(0x1a2433));
+    packs.setColorAt(p, hex(0x141820));
   }
   scene.add(packs);
 
-  const spineGeo = new THREE.IcosahedronGeometry(0.42, 1);
+  const spineGeo = new THREE.IcosahedronGeometry(0.28, 1);
   const spineMat = new THREE.MeshStandardMaterial({
-    color: 0x0d3d39,
-    emissive: 0x2ee6d6,
-    emissiveIntensity: 1.35,
-    roughness: 0.18,
-    metalness: 0.2,
+    color: 0x0a1818,
+    emissive: 0x1a3a3a,
+    emissiveIntensity: 0.22,
+    roughness: 0.7,
+    metalness: 0.05,
   });
   const spine = new THREE.InstancedMesh(spineGeo, spineMat, N_SPINE);
   const spineSpark = new Float32Array(N_SPINE);
   const spineHeat = new Float32Array(N_SPINE);
-  spineHeat.fill(0.45);
-  const spineLights = [];
+  spineHeat.fill(0.42);
   for (let g = 0; g < N_SPINE; g++) {
-    const y = layerY(g * 4 + 3);
-    dummy.position.set(0, y, 0);
+    dummy.position.set(0, layerY(g * 4 + 3), 0);
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     spine.setMatrixAt(g, dummy.matrix);
-    spine.setColorAt(g, hex(0x2ee6d6));
-    const lamp = new THREE.PointLight(0x2ee6d6, 0.7, 8);
-    lamp.position.set(0, y, 0);
-    scene.add(lamp);
-    spineLights.push(lamp);
+    spine.setColorAt(g, hex(0x1c3334));
   }
   scene.add(spine);
 
-  const ffnGeo = new THREE.BoxGeometry(0.16, 0.28, 0.16);
+  const ffnGeo = new THREE.BoxGeometry(0.14, 0.24, 0.14);
   const ffnMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const ffn = new THREE.InstancedMesh(ffnGeo, ffnMat, FFN_COUNT);
   const ffnFlash = new Float32Array(FFN_COUNT);
@@ -200,12 +200,12 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
       dummy.updateMatrix();
       ffn.setMatrixAt(i, dummy.matrix);
-      ffn.setColorAt(i, hex(0x0b0e14));
+      ffn.setColorAt(i, hex(0x07090d));
     }
   }
   scene.add(ffn);
 
-  const vocabGeo = new THREE.BoxGeometry(0.12, 0.22, 0.12);
+  const vocabGeo = new THREE.BoxGeometry(0.1, 0.16, 0.1);
   const vocabMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   const vocab = new THREE.InstancedMesh(vocabGeo, vocabMat, VOCAB_BINS);
   const vocabFlash = new Float32Array(VOCAB_BINS);
@@ -218,62 +218,44 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     vocab.setMatrixAt(b, dummy.matrix);
-    vocab.setColorAt(b, hex(0x14110c));
+    vocab.setColorAt(b, hex(0x0c0d10));
   }
   scene.add(vocab);
-
-  const moteGeo = new THREE.BufferGeometry();
-  const moteN = 420;
-  const motePos = new Float32Array(moteN * 3);
-  for (let i = 0; i < moteN; i++) {
-    const t = Math.random() * Math.PI * 2;
-    const r = 1.2 + Math.random() * 7.2;
-    motePos[i * 3] = Math.sin(t) * r;
-    motePos[i * 3 + 1] = -1.6 + Math.random() * (towerH + 3);
-    motePos[i * 3 + 2] = Math.cos(t) * r;
-  }
-  moteGeo.setAttribute("position", new THREE.BufferAttribute(motePos, 3));
-  const motes = new THREE.Points(
-    moteGeo,
-    new THREE.PointsMaterial({
-      color: 0x3a4a5c,
-      size: 0.035,
-      transparent: true,
-      opacity: 0.35,
-      depthWrite: false,
-    }),
-  );
-  scene.add(motes);
 
   const flyers = [];
 
   function spawnToken(word, id) {
     const sprite = makeGlyphSprite(word, id);
+    const streak = makeStreakMesh();
     const bin = vocabBinIndex(id);
     const start = vocabXZ(bin);
-    const drift = ((id % 11) - 5) * 0.18;
-    const midY = 1.2 + (id % 17) * (towerH / 28);
-    const endY = towerH * 0.72 + (id % 9) * 0.35;
+    const drift = ((id % 11) - 5) * 0.12;
     sprite.position.set(start.x, -1.15, start.z);
+    streak.position.copy(sprite.position);
     scene.add(sprite);
+    scene.add(streak);
     flyers.push({
       sprite,
+      streak,
       age: 0,
-      life: 2.6 + rarityGlow(id) * 0.6,
+      life: 0.72 + rarityGlow(id) * 0.18,
       sx: start.x,
       sy: -1.15,
       sz: start.z,
-      mx: start.x * 0.28 + drift,
-      my: midY,
-      mz: start.z * 0.28 - drift * 0.4,
-      ex: drift * 0.4,
-      ey: endY,
-      ez: -drift * 0.3,
+      mx: start.x * 0.22 + drift,
+      my: towerH * 0.38,
+      mz: start.z * 0.22 - drift * 0.3,
+      ex: drift * 0.25,
+      ey: towerH + 0.8,
+      ez: -drift * 0.2,
     });
     while (flyers.length > MAX_FLYERS) {
       const old = flyers.shift();
       scene.remove(old.sprite);
+      scene.remove(old.streak);
       old.sprite.material.dispose();
+      old.streak.geometry.dispose();
+      old.streak.material.dispose();
     }
   }
 
@@ -281,7 +263,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     for (let i = 0; i < FFN_COUNT; i++) {
       if (bins[i] && (!presentBins || presentBins[i])) {
         ffnFlash[i] = 1;
-        ffnHeat[i] = 0.4;
+        ffnHeat[i] = 0.28;
       }
     }
     for (let p = 0; p < N_PACKS; p++) {
@@ -292,7 +274,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     }
     for (let g = 0; g < N_SPINE; g++) {
       spineSpark[g] = 1;
-      spineHeat[g] = Math.min(0.96, spineHeat[g] * 0.9 + 0.22);
+      spineHeat[g] = Math.min(0.85, spineHeat[g] * 0.94 + 0.08);
     }
     vocabFlash.fill(0);
     vocabRare.fill(0);
@@ -309,12 +291,12 @@ export function createMap(container, { presentBins = null, presentPacks = null }
 
   function paintInstances(dt) {
     for (let p = 0; p < N_PACKS; p++) {
-      packFlash[p] *= 0.84;
+      packFlash[p] *= 0.88;
       const pulse = packFlash[p];
       if (pulse < 0.04) {
-        tmpColor.setRGB(0.12, 0.16, 0.22);
+        tmpColor.setRGB(0.08, 0.1, 0.13);
       } else {
-        tmpColor.setRGB(1.0, 0.55 + pulse * 0.3, 0.08);
+        tmpColor.setRGB(0.32 + pulse * 0.18, 0.26 + pulse * 0.08, 0.16);
       }
       packs.setColorAt(p, tmpColor);
       const layer = layerFromPackId(p);
@@ -323,10 +305,10 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       if (presentPacks && !presentPacks[p]) {
         dummy.scale.set(0, 0, 0);
       } else {
-        const s = 1 + pulse * 1.15;
+        const s = 1 + pulse * 0.1;
         dummy.scale.set(s, s, s);
       }
-      dummy.rotation.set(0.2, 0.4 + pulse * 1.6, 0.15);
+      dummy.rotation.set(0.2, 0.3 + pulse * 0.25, 0.08);
       dummy.updateMatrix();
       packs.setMatrixAt(p, dummy.matrix);
     }
@@ -335,51 +317,46 @@ export function createMap(container, { presentBins = null, presentPacks = null }
 
     let maxSpark = 0;
     for (let g = 0; g < N_SPINE; g++) {
-      spineSpark[g] *= 0.86;
+      spineSpark[g] *= 0.9;
       if (spineSpark[g] > maxSpark) maxSpark = spineSpark[g];
-      const heat = Math.max(0.4, spineHeat[g]);
+      const heat = Math.max(0.38, spineHeat[g]);
       const spark = spineSpark[g];
       tmpColor.setRGB(
-        0.2 + spark * 0.85,
-        0.75 + spark * 0.25 + heat * 0.12,
-        0.72 + spark * 0.28,
+        0.1 + spark * 0.12 + heat * 0.04,
+        0.2 + spark * 0.16 + heat * 0.08,
+        0.22 + spark * 0.14 + heat * 0.08,
       );
       spine.setColorAt(g, tmpColor);
       dummy.position.set(0, layerY(g * 4 + 3), 0);
-      const s = 1.1 + spark * 0.95 + heat * 0.12;
-      dummy.scale.set(s, s, s);
+      dummy.scale.set(1 + spark * 0.06, 1 + spark * 0.06, 1 + spark * 0.06);
       dummy.updateMatrix();
       spine.setMatrixAt(g, dummy.matrix);
-      spineLights[g].intensity = 0.55 + spark * 3.4 + heat * 0.35;
     }
     spine.instanceColor.needsUpdate = true;
     spine.instanceMatrix.needsUpdate = true;
-    spineMat.emissiveIntensity = 1.05 + maxSpark * 1.8;
-    well.intensity = 1.6 + maxSpark * 3.2;
-    shaftCore.material.opacity = 0.45 + maxSpark * 0.5;
-    shaft.material.opacity = 0.4 + maxSpark * 0.25;
+    spineMat.emissiveIntensity = 0.18 + maxSpark * 0.12;
 
     for (let i = 0; i < FFN_COUNT; i++) {
-      ffnFlash[i] *= 0.78;
-      ffnHeat[i] *= 0.88;
+      ffnFlash[i] *= 0.82;
+      ffnHeat[i] *= 0.9;
       const f = ffnFlash[i];
       const h = ffnHeat[i];
       if (f < 0.03 && h < 0.05) {
-        tmpColor.setRGB(0.035, 0.042, 0.055);
+        tmpColor.setRGB(0.025, 0.03, 0.04);
       } else {
-        tmpColor.setRGB(0.25 + f * 0.85 + h * 0.2, 0.08 + f * 0.28, 0.16 + f * 0.55 + h * 0.12);
+        tmpColor.setRGB(0.12 + f * 0.22 + h * 0.08, 0.16 + f * 0.2, 0.2 + f * 0.22 + h * 0.06);
       }
       ffn.setColorAt(i, tmpColor);
     }
     ffn.instanceColor.needsUpdate = true;
 
     for (let b = 0; b < VOCAB_BINS; b++) {
-      vocabFlash[b] *= 0.78;
+      vocabFlash[b] *= 0.82;
       const f = vocabFlash[b] * (vocabRare[b] || 1);
       if (f < 0.02) {
-        tmpColor.setRGB(0.07, 0.06, 0.045);
+        tmpColor.setRGB(0.045, 0.048, 0.055);
       } else {
-        tmpColor.setRGB(0.5 + f * 0.5, 0.4 + f * 0.55, 0.12 + f * 0.25);
+        tmpColor.setRGB(0.22 + f * 0.18, 0.22 + f * 0.16, 0.18 + f * 0.1);
       }
       vocab.setColorAt(b, tmpColor);
     }
@@ -389,35 +366,32 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       const fl = flyers[i];
       fl.age += dt;
       const t = Math.min(1, fl.age / fl.life);
-      const ease = t * t * (3 - 2 * t);
-      fl.sprite.position.set(
-        bezier3(fl.sx, fl.mx, fl.ex, ease),
-        bezier3(fl.sy, fl.my, fl.ey, ease),
-        bezier3(fl.sz, fl.mz, fl.ez, ease),
-      );
-      const fade = t < 0.12 ? t / 0.12 : 1 - (t - 0.12) / 0.88;
-      fl.sprite.material.opacity = Math.max(0, fade) * (0.55 + fl.sprite.userData.rare * 0.45);
-      const s = 1 + (1 - t) * 0.35;
-      fl.sprite.scale.set(
-        Math.max(1.15, Math.min(3.6, fl.sprite.userData.text.length * 0.38)) * s,
-        0.85 * s,
-        1,
-      );
+      const ease = t;
+      const x = bezier3(fl.sx, fl.mx, fl.ex, ease);
+      const y = bezier3(fl.sy, fl.my, fl.ey, ease);
+      const z = bezier3(fl.sz, fl.mz, fl.ez, ease);
+      const nx = bezier3(fl.sx, fl.mx, fl.ex, Math.min(1, ease + 0.04));
+      const ny = bezier3(fl.sy, fl.my, fl.ey, Math.min(1, ease + 0.04));
+      const nz = bezier3(fl.sz, fl.mz, fl.ez, Math.min(1, ease + 0.04));
+      fl.sprite.position.set(x, y, z);
+      fl.streak.position.set(x, y, z);
+      fl.streak.lookAt(nx, ny, nz);
+      const fade = t < 0.08 ? t / 0.08 : 1 - (t - 0.08) / 0.92;
+      const a = Math.max(0, fade) * (0.28 + fl.sprite.userData.rare * 0.22);
+      fl.sprite.material.opacity = a;
+      fl.streak.material.opacity = a * 0.7;
+      const w = Math.max(0.42, Math.min(1.15, fl.sprite.userData.text.length * 0.13));
+      fl.sprite.scale.set(w, 0.28, 1);
       if (t >= 1) {
         scene.remove(fl.sprite);
+        scene.remove(fl.streak);
         fl.sprite.material.dispose();
+        fl.streak.geometry.dispose();
+        fl.streak.material.dispose();
         flyers.splice(i, 1);
       }
     }
-
-    motes.rotation.y += dt * 0.03;
   }
-
-  const composer = new EffectComposer(renderer);
-  const renderPass = new RenderPass(scene, camera);
-  const bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.72, 0.42, 0.32);
-  composer.addPass(renderPass);
-  composer.addPass(bloom);
 
   function resize() {
     const w = container.clientWidth;
@@ -425,8 +399,6 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     camera.aspect = w / Math.max(1, h);
     camera.updateProjectionMatrix();
     renderer.setSize(w, h, false);
-    composer.setSize(w, h);
-    bloom.resolution.set(w, h);
   }
 
   window.addEventListener("resize", resize);
@@ -438,11 +410,8 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     paintInstances(dt);
-    const crane = Math.sin(now * 0.00012) * 1.15;
-    camera.position.y = 1.8 + crane;
-    controls.target.y = towerH * 0.42 + crane * 0.25;
     controls.update();
-    composer.render();
+    renderer.render(scene, camera);
     raf = requestAnimationFrame(tick);
   }
   raf = requestAnimationFrame(tick);
@@ -456,16 +425,18 @@ export function createMap(container, { presentBins = null, presentPacks = null }
       controls.dispose();
       for (const fl of flyers) {
         scene.remove(fl.sprite);
+        scene.remove(fl.streak);
         fl.sprite.material.dispose();
+        fl.streak.geometry.dispose();
+        fl.streak.material.dispose();
       }
       flyers.length = 0;
       renderer.dispose();
-      composer.dispose();
       packGeo.dispose();
       spineGeo.dispose();
       ffnGeo.dispose();
       vocabGeo.dispose();
-      moteGeo.dispose();
+      stars.geo.dispose();
       packMat.dispose();
       spineMat.dispose();
       ffnMat.dispose();

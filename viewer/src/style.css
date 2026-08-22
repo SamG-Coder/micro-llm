@@ -1,13 +1,12 @@
 :root {
   color-scheme: dark;
-  --bg: #04050a;
-  --ink: #d7dde8;
-  --muted: #6d7788;
-  --line: rgba(80, 110, 140, 0.22);
+  --bg: #010208;
+  --ink: #9aa6b5;
+  --muted: #5a6574;
   --green: #3dce7a;
   --yellow: #e3c14a;
   --red: #e35a5a;
-  --accent: #2ee6d6;
+  --accent: #6e8a96;
 }
 
 * {
@@ -40,20 +39,19 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  text-shadow: 0 0 18px rgba(0, 0, 0, 0.85);
 }
 
 #hud-tl {
   position: absolute;
-  top: 18px;
-  left: 20px;
+  top: 16px;
+  left: 18px;
   max-width: 42vw;
 }
 
 #hud-tr {
   position: absolute;
   top: 14px;
-  right: 20px;
+  right: 18px;
   text-align: right;
 }
 
@@ -68,18 +66,14 @@ body {
   display: flex;
   align-items: baseline;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
 }
 
 #tokens {
-  font-size: 42px;
+  font-size: 22px;
   font-variant-numeric: tabular-nums;
-  color: #f4fbff;
+  color: #c5cdd8;
   letter-spacing: 0.04em;
-}
-
-#tokens.tick {
-  animation: token-pop 160ms ease-out;
 }
 
 #hud-tr .meta {
@@ -90,13 +84,13 @@ body {
 
 #flags {
   margin-left: 10px;
-  color: #ffb45a;
+  color: #8a7a5c;
 }
 
 #budget {
   position: absolute;
-  left: 20px;
-  right: 20px;
+  left: 18px;
+  right: 18px;
   bottom: 14px;
   pointer-events: none;
 }
@@ -108,10 +102,9 @@ body {
 }
 
 #budget .track {
-  height: 7px;
-  background: rgba(10, 14, 22, 0.72);
-  border: 1px solid rgba(80, 100, 130, 0.35);
-  box-shadow: 0 0 24px rgba(0, 0, 0, 0.45);
+  height: 5px;
+  background: rgba(8, 10, 16, 0.7);
+  border: 1px solid rgba(70, 82, 98, 0.28);
 }
 
 #budget .fill {
@@ -131,9 +124,4 @@ body {
   color: var(--accent);
   letter-spacing: 0.18em;
   font-size: 11px;
-}
-
-@keyframes token-pop {
-  from { color: #fff; filter: brightness(1.8); }
-  to { color: #f4fbff; filter: none; }
 }

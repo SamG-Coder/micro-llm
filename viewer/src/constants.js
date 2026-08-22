@@ -11,6 +11,8 @@ export const FIRE_EPS = 1e-6;
 export const SPIKE_EPS = 0.02;
 export const RING_DEPTH = 64;
 export const TOPK_MAX = 64;
+// Sample replay step. Fast enough to read as a stream, not a nightclub strobe.
+export const SAMPLE_TOKEN_MS = 48;
 
 export const HTR1_MAGIC = "HTR1";
 export const HTR1_VERSION = 1;

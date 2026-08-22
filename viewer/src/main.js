@@ -1,6 +1,6 @@
 import "./style.css";
 import sampleKeepMask from "../sample/sample_keep_mask.json";
-import { FLAG_SPECIAL_OR_HIGH_LOSS } from "./constants.js";
+import { FLAG_SPECIAL_OR_HIGH_LOSS, SAMPLE_TOKEN_MS } from "./constants.js";
 import { formatGiB, sampleBudgetAtToken } from "./budget.js";
 import { loadKeepMask, presentBins, presentPacks } from "./keepmask.js";
 import {
@@ -12,7 +12,7 @@ import {
 import { createMap } from "./scene.js";
 import { decodeId } from "./vocab.js";
 
-const TOKEN_MS = 160;
+const TOKEN_MS = SAMPLE_TOKEN_MS;
 
 const hud = {
   tokens: document.getElementById("tokens"),
@@ -52,9 +52,6 @@ function step() {
 
   played += 1;
   hud.tokens.textContent = String(played);
-  hud.tokens.classList.remove("tick");
-  void hud.tokens.offsetWidth;
-  hud.tokens.classList.add("tick");
   const layer = hottestLayerThisToken(rec.ffnFired, keepMask);
   hud.layer.textContent = layer === null ? "—" : `L${layer}`;
   const special = (rec.flags & FLAG_SPECIAL_OR_HIGH_LOSS) !== 0;
