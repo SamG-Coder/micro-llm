@@ -1,4 +1,5 @@
 #include "micro_llm/gguf_meta.hpp"
+#include "micro_llm/hotspot_ui.hpp"
 #include "micro_llm/live_forward.hpp"
 #include "micro_llm/micro_llm.hpp"
 #include "micro_llm/serve.hpp"
@@ -7,6 +8,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
+#ifdef _WIN32
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#endif
 #include <sys/stat.h>
 
 namespace {
@@ -18,13 +25,18 @@ bool file_exists(const std::string& path) {
 
 void usage(const char* argv0) {
     std::fprintf(stderr,
-                 "Usage: %s --model PATH.gguf [--prompt TEXT] [--out prune_table.bin]\n"
+                 "Usage: %s [--ui] [--ui-check]\n"
+                 "          --model PATH.gguf [--prompt TEXT] [--out prune_table.bin]\n"
                  "          [--n-predict N] [--top-k K] [--ctx N] [--stub]\n"
                  "\n"
-                 "Live Qwen 27B (3.6/3.8 hybrid) hour dump. Job: local coding assistant.\n"
-                 "Does not load vision. Fails clearly without weights.\n"
+                 "No args / --ui  Open the sample hotspot window. Does not load a GGUF.\n"
+                 "                Does not start the hour. Windows uses WebView2.\n"
+                 "--ui-check      Locate committed UI files and exit. No window.\n"
                  "\n"
-                 "  --model     Qwen 27B GGUF (qwen35). Required unless --stub.\n"
+                 "Live Qwen 27B (3.6/3.8 hybrid) hour dump. Job: local coding assistant.\n"
+                 "Does not load vision. Hour stays down unless --model or --stub.\n"
+                 "\n"
+                 "  --model     Qwen 27B GGUF (qwen35). Starts the hour. Not required for --ui.\n"
                  "  --prompt    Job prompt. Default is the coding-assistant prompt.\n"
                  "  --out       MLPT path (default prune_table.bin)\n"
                  "  --n-predict Tokens to generate after the prompt (default 64)\n"
@@ -41,6 +53,8 @@ int main(int argc, char** argv) {
     LiveForwardConfig cfg;
     cfg.prompt = default_coding_assistant_prompt();
     bool use_stub = false;
+    bool want_ui = false;
+    bool ui_check = false;
     std::string check_serve;
 
     for (int i = 1; i < argc; ++i) {
@@ -65,6 +79,10 @@ int main(int argc, char** argv) {
             cfg.n_ctx = static_cast<uint32_t>(std::strtoul(need("--ctx"), nullptr, 10));
         } else if (std::strcmp(argv[i], "--stub") == 0) {
             use_stub = true;
+        } else if (std::strcmp(argv[i], "--ui") == 0) {
+            want_ui = true;
+        } else if (std::strcmp(argv[i], "--ui-check") == 0) {
+            ui_check = true;
         } else if (std::strcmp(argv[i], "--check-serve") == 0) {
             check_serve = need("--check-serve");
         } else if (std::strcmp(argv[i], "-h") == 0 || std::strcmp(argv[i], "--help") == 0) {
@@ -89,6 +107,17 @@ int main(int argc, char** argv) {
             return 1;
         }
         return 0;
+    }
+
+    const bool hour = use_stub || !cfg.model_path.empty();
+    if (!hour || want_ui || ui_check) {
+        if (hour && (want_ui || ui_check)) {
+            std::fprintf(stderr,
+                         "note: --ui does not load a GGUF; hour flags were ignored\n");
+        }
+        HotspotUiOptions opt;
+        opt.check_only = ui_check;
+        return run_hotspot_ui(opt);
     }
 
     if (!use_stub) {

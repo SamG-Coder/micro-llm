@@ -25,9 +25,10 @@ Two loaders, one file format. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTUR
 
 | Path | What |
 | --- | --- |
-| [harness/](harness/) | C++ trace streamer. Scores the hour. Writes one MLPT. Does not cut. |
+| [harness/](harness/) | C++ trace streamer + Windows hotspot window. Scores the hour. Writes one MLPT. Does not cut. |
 | [export/](export/) | Packer. Reads MLPT + full GGUF, cuts, writes one packed remnant GGUF. |
 | [docs/PRUNE_TABLE.md](docs/PRUNE_TABLE.md) | MLPT format |
+| [harness/ui/](harness/ui/) | Committed sample hotspot map (static HTML/JS). Hosted by the exe. |
 
 ## Status
 
@@ -35,11 +36,13 @@ Harness and export are on main. Streamer dumps scores. Packer cuts and writes th
 
 First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.md).
 
-Sample hotspot viewer (hook-ring replay, no live attach): [viewer/](viewer/).
+Sample hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. The window is the 3D sample ring, not the hour. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/).
 
 ## Build
 
 cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure
+
+Windows: the same cmake produces `micro-llm-trace.exe`. Double-click it (or run with no args / `--ui`) to open the sample map. Do not run `npm`. The hour still needs `--model`.
 
 cd export && pip install -r requirements.txt && pytest -q
 

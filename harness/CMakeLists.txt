@@ -10,6 +10,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(MICRO_LLM_CUDA "Build the CUDA FFN-reduce kernel (requires nvcc)" OFF)
 option(MICRO_LLM_LLAMA "Link llama.cpp for a real Qwen 27B live forward" OFF)
 set(MICRO_LLM_LLAMA_DIR "" CACHE PATH "Path to a llama.cpp checkout (optional)")
+set(WEBVIEW2_SDK_PATH "" CACHE PATH "Microsoft.Web.WebView2 nupkg extract (Windows)")
+
+function(micro_llm_set_warnings tgt)
+  if(MSVC)
+    target_compile_options(${tgt} PRIVATE /W3 /utf-8 /permissive-)
+  else()
+    target_compile_options(${tgt} PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+endfunction()
 
 set(MICRO_LLM_HAS_CUDA OFF)
 if(MICRO_LLM_CUDA)
@@ -37,7 +46,7 @@ add_library(micro_llm
 )
 target_include_directories(micro_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(micro_llm PUBLIC cxx_std_17)
-target_compile_options(micro_llm PRIVATE -Wall -Wextra -Wpedantic)
+micro_llm_set_warnings(micro_llm)
 
 if(MICRO_LLM_HAS_CUDA)
   target_sources(micro_llm PRIVATE src/ffn_reduce.cu)
@@ -78,13 +87,99 @@ else()
   message(STATUS "micro-llm: llama.cpp not linked (probe-only 27B backend)")
 endif()
 
+set(MICRO_LLM_UI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ui")
+if(NOT EXISTS "${MICRO_LLM_UI_SOURCE_DIR}/index.html")
+  message(FATAL_ERROR
+    "Committed hotspot UI missing at ${MICRO_LLM_UI_SOURCE_DIR}/index.html. "
+    "These static files are part of the tree; do not run npm to build the exe.")
+endif()
+
+add_library(micro_llm_ui STATIC src/hotspot_ui.cpp)
+target_include_directories(micro_llm_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(micro_llm_ui PUBLIC cxx_std_17)
+target_compile_definitions(micro_llm_ui PRIVATE
+  MICRO_LLM_UI_SOURCE_DIR="${MICRO_LLM_UI_SOURCE_DIR}")
+micro_llm_set_warnings(micro_llm_ui)
+
+set(MICRO_LLM_HAS_WEBVIEW2 OFF)
+if(WIN32)
+  set(_wv2_root "")
+  if(WEBVIEW2_SDK_PATH AND EXISTS "${WEBVIEW2_SDK_PATH}/build/native/include/WebView2.h")
+    set(_wv2_root "${WEBVIEW2_SDK_PATH}")
+  else()
+    include(FetchContent)
+    FetchContent_Declare(microsoft_webview2
+      URL https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.3179.45
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_GetProperties(microsoft_webview2)
+    if(NOT microsoft_webview2_POPULATED)
+      FetchContent_Populate(microsoft_webview2)
+    endif()
+    if(EXISTS "${microsoft_webview2_SOURCE_DIR}/build/native/include/WebView2.h")
+      set(_wv2_root "${microsoft_webview2_SOURCE_DIR}")
+    endif()
+  endif()
+
+  if(_wv2_root)
+    target_sources(micro_llm_ui PRIVATE src/hotspot_ui_win32.cpp)
+    target_include_directories(micro_llm_ui PRIVATE "${_wv2_root}/build/native/include")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "[Aa][Rr][Mm]64")
+      set(_wv2_arch arm64)
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+      set(_wv2_arch x64)
+    else()
+      set(_wv2_arch x86)
+    endif()
+    set(_wv2_lib "${_wv2_root}/build/native/${_wv2_arch}/WebView2Loader.dll.lib")
+    if(NOT EXISTS "${_wv2_lib}")
+      message(FATAL_ERROR "WebView2 loader missing: ${_wv2_lib}")
+    endif()
+    target_link_libraries(micro_llm_ui PRIVATE
+      "${_wv2_lib}" ole32 oleaut32 user32 gdi32 shlwapi advapi32 version shell32)
+    target_compile_definitions(micro_llm_ui PRIVATE MICRO_LLM_HAS_WEBVIEW2=1 UNICODE _UNICODE)
+    set(MICRO_LLM_WEBVIEW2_DLL
+        "${_wv2_root}/build/native/${_wv2_arch}/WebView2Loader.dll")
+    set(MICRO_LLM_HAS_WEBVIEW2 ON)
+    message(STATUS "micro-llm: WebView2 host enabled (${_wv2_arch})")
+  else()
+    message(WARNING
+      "Windows build but WebView2 SDK was not found. "
+      "Set -DWEBVIEW2_SDK_PATH=... or allow FetchContent. "
+      "The exe will not open a native window.")
+  endif()
+endif()
+
 add_executable(micro-llm-dump src/cli_dump.cpp)
 target_link_libraries(micro-llm-dump PRIVATE micro_llm)
-target_compile_options(micro-llm-dump PRIVATE -Wall -Wextra -Wpedantic)
+micro_llm_set_warnings(micro-llm-dump)
 
 add_executable(micro-llm-trace src/cli_trace.cpp)
-target_link_libraries(micro-llm-trace PRIVATE micro_llm)
-target_compile_options(micro-llm-trace PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(micro-llm-trace PRIVATE micro_llm micro_llm_ui)
+micro_llm_set_warnings(micro-llm-trace)
+
+add_executable(micro-llm-view src/cli_view.cpp)
+target_link_libraries(micro-llm-view PRIVATE micro_llm_ui)
+micro_llm_set_warnings(micro-llm-view)
+if(WIN32)
+  set_target_properties(micro-llm-view PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
+
+function(micro_llm_copy_ui tgt)
+  add_custom_command(TARGET ${tgt} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MICRO_LLM_UI_SOURCE_DIR}"
+            "$<TARGET_FILE_DIR:${tgt}>/ui"
+    COMMENT "Copy committed hotspot UI next to ${tgt}")
+  if(MICRO_LLM_HAS_WEBVIEW2 AND MICRO_LLM_WEBVIEW2_DLL)
+    add_custom_command(TARGET ${tgt} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${MICRO_LLM_WEBVIEW2_DLL}"
+              "$<TARGET_FILE_DIR:${tgt}>/WebView2Loader.dll")
+  endif()
+endfunction()
+
+micro_llm_copy_ui(micro-llm-trace)
+micro_llm_copy_ui(micro-llm-view)
 
 add_executable(micro_llm_tests
   tests/test_main.cpp
@@ -100,10 +195,11 @@ add_executable(micro_llm_tests
   tests/test_live_forward.cpp
   tests/test_graph_hooks.cpp
   tests/test_gguf_serve.cpp
+  tests/test_hotspot_ui.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
-target_link_libraries(micro_llm_tests PRIVATE micro_llm)
-target_compile_options(micro_llm_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(micro_llm_tests PRIVATE micro_llm micro_llm_ui)
+micro_llm_set_warnings(micro_llm_tests)
 
 enable_testing()
 add_test(NAME micro_llm_tests COMMAND micro_llm_tests)
@@ -114,9 +210,14 @@ add_test(NAME micro_llm_trace_no_weights
 set_tests_properties(micro_llm_trace_no_weights PROPERTIES WILL_FAIL TRUE)
 add_test(NAME micro_llm_trace_stub
          COMMAND micro-llm-trace --stub --n-predict 2 --out ${CMAKE_CURRENT_BINARY_DIR}/stub_prune.bin)
+add_test(NAME micro_llm_trace_ui_check
+         COMMAND micro-llm-trace --ui-check)
+add_test(NAME micro_llm_view_ui_check
+         COMMAND micro-llm-view --ui-check)
 
-install(TARGETS micro_llm micro-llm-dump micro-llm-trace
+install(TARGETS micro_llm micro-llm-dump micro-llm-trace micro-llm-view
         RUNTIME DESTINATION bin
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib)
 install(DIRECTORY include/micro_llm DESTINATION include)
+install(DIRECTORY ui DESTINATION share/micro-llm)
