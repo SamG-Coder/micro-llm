@@ -4,6 +4,18 @@
 #include <cstring>
 #include <fstream>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <stdio.h>
+#endif
+
 namespace micro_llm {
 namespace {
 
@@ -362,6 +374,33 @@ bool load_prune_table(PruneTable& table, const std::string& path, std::string* e
     } else {
         table.set_layer_hooked_bits(0);
     }
+    return true;
+}
+
+bool checkpoint_prune_table(const PruneTable& table, const std::string& path, std::string* err) {
+    if (path.empty()) {
+        set_err(err, "checkpoint path is empty");
+        return false;
+    }
+    const std::string tmp = path + ".tmp";
+    // Scores / prune table only. Do not pack or cut weights from a 2k dump.
+    if (!save_prune_table(table, tmp, err)) {
+        return false;
+    }
+#ifdef _WIN32
+    if (!MoveFileExA(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::remove(tmp.c_str());
+        set_err(err, "atomic rename of checkpoint failed");
+        return false;
+    }
+#else
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::remove(tmp.c_str());
+        set_err(err, "atomic rename of checkpoint failed");
+        return false;
+    }
+#endif
     return true;
 }
 

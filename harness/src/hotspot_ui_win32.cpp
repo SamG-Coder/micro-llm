@@ -17,15 +17,38 @@
 #include <wrl.h>
 #include <WebView2.h>
 
+#include "micro_llm/hook_ring.hpp"
+#include "micro_llm/hotspot_ui.hpp"
+
+#include <atomic>
+#include <cstdint>
+#include <cstring>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <vector>
 
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
 namespace {
 
+constexpr UINT WM_HTR1 = WM_APP + 41;
+constexpr UINT WM_HOST_JSON = WM_APP + 42;
+constexpr UINT WM_HOUR_DONE = WM_APP + 43;
+
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
+ComPtr<ICoreWebView2Environment> g_env;
+ComPtr<ICoreWebView2SharedBuffer> g_shared;
+HWND g_hwnd = nullptr;
+
+std::mutex g_mu;
+std::deque<std::vector<uint8_t>> g_htr1;
+std::deque<std::wstring> g_json;
+std::atomic<bool> g_page_ready{false};
+std::atomic<int> g_hour_rc{0};
 
 std::wstring utf8_to_wide(const std::string& s) {
     if (s.empty()) return {};
@@ -48,6 +71,66 @@ std::wstring file_url(const std::wstring& dir) {
     return L"file://" + path;
 }
 
+void post_to_hwnd(UINT msg) {
+    if (g_hwnd) {
+        PostMessageW(g_hwnd, msg, 0, 0);
+    }
+}
+
+void ensure_shared_buffer() {
+    if (g_shared || !g_env) {
+        return;
+    }
+    ComPtr<ICoreWebView2Environment12> env12;
+    if (FAILED(g_env.As(&env12))) {
+        return;
+    }
+    env12->CreateSharedBuffer(micro_llm::kHtr1RecordBytes, &g_shared);
+}
+
+void post_one_htr1(const uint8_t* rec, size_t nbytes) {
+    if (!g_webview || !rec || nbytes < micro_llm::kHtr1RecordBytes) {
+        return;
+    }
+    ensure_shared_buffer();
+    ComPtr<ICoreWebView2_17> wv17;
+    if (g_shared && SUCCEEDED(g_webview.As(&wv17))) {
+        BYTE* dest = nullptr;
+        if (SUCCEEDED(g_shared->get_Buffer(&dest)) && dest) {
+            std::memcpy(dest, rec, micro_llm::kHtr1RecordBytes);
+            wv17->PostSharedBufferToScript(g_shared, COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY,
+                                           L"{\"type\":\"htr1\"}");
+        }
+    }
+    // Always also post a host message so chrome.webview 'message' fires.
+    g_webview->PostWebMessageAsJson(L"{\"type\":\"htr1\"}");
+}
+
+void drain_host_queue() {
+    if (!g_webview || !g_page_ready.load()) {
+        return;
+    }
+    std::vector<std::vector<uint8_t>> recs;
+    std::vector<std::wstring> jsons;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        while (!g_htr1.empty()) {
+            recs.push_back(std::move(g_htr1.front()));
+            g_htr1.pop_front();
+        }
+        while (!g_json.empty()) {
+            jsons.push_back(std::move(g_json.front()));
+            g_json.pop_front();
+        }
+    }
+    for (const auto& js : jsons) {
+        g_webview->PostWebMessageAsJson(js.c_str());
+    }
+    for (const auto& rec : recs) {
+        post_one_htr1(rec.data(), rec.size());
+    }
+}
+
 LRESULT CALLBACK hotspot_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
         case WM_SIZE:
@@ -57,7 +140,15 @@ LRESULT CALLBACK hotspot_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 g_controller->put_Bounds(rc);
             }
             return 0;
+        case WM_HTR1:
+        case WM_HOST_JSON:
+            drain_host_queue();
+            return 0;
+        case WM_HOUR_DONE:
+            return 0;
         case WM_DESTROY:
+            micro_llm::hotspot_live_abort().store(true);
+            g_hwnd = nullptr;
             PostQuitMessage(0);
             return 0;
         default:
@@ -77,8 +168,38 @@ void show_runtime_error() {
 
 }  // namespace
 
-int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir) {
-    FreeConsole();
+void micro_llm_hotspot_win32_push_htr1(const uint8_t* rec, size_t nbytes) {
+    if (!rec || nbytes == 0) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_htr1.emplace_back(rec, rec + nbytes);
+        while (g_htr1.size() > micro_llm::kHtr1RingDepth) {
+            g_htr1.pop_front();
+        }
+    }
+    post_to_hwnd(WM_HTR1);
+}
+
+void micro_llm_hotspot_win32_push_json(const std::string& json_utf8) {
+    if (json_utf8.empty()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_json.push_back(utf8_to_wide(json_utf8));
+    }
+    post_to_hwnd(WM_HOST_JSON);
+}
+
+int micro_llm_run_hotspot_ui_win32(const micro_llm::HotspotUiOptions& opt,
+                                   const std::string& ui_dir) {
+    if (!opt.live) {
+        FreeConsole();
+    } else {
+        micro_llm::hotspot_live_abort().store(false);
+    }
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     const bool did_init = SUCCEEDED(hr);
@@ -97,14 +218,21 @@ int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir) {
     wc.lpszClassName = L"MicroLLMHotspot";
     RegisterClassExW(&wc);
 
-    HWND hwnd = CreateWindowExW(
-        0, wc.lpszClassName, L"micro-llm hotspot — sample ring",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1440, 900, nullptr, nullptr,
-        wc.hInstance, nullptr);
+    const std::string title_utf8 =
+        opt.title.empty()
+            ? (opt.live ? std::string("micro-llm hotspot — live hour")
+                        : std::string("micro-llm hotspot — sample ring"))
+            : opt.title;
+    const std::wstring title = utf8_to_wide(title_utf8);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPEDWINDOW,
+                                CW_USEDEFAULT, CW_USEDEFAULT, 1440, 900, nullptr, nullptr,
+                                wc.hInstance, nullptr);
     if (!hwnd) {
         if (did_init) CoUninitialize();
         return 1;
     }
+    g_hwnd = hwnd;
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
@@ -113,21 +241,41 @@ int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir) {
     std::wstring user_data = std::wstring(tmp) + L"micro-llm-hotspot";
     const std::wstring ui_wide = utf8_to_wide(ui_dir);
     const std::wstring fallback = file_url(ui_wide);
+    const bool live = opt.live;
+    std::function<int()> run_hour = opt.run_hour;
+    std::thread worker;
+    std::atomic<bool> worker_started{false};
+
+    auto start_hour = [&]() {
+        if (!live || !run_hour || worker_started.exchange(true)) {
+            return;
+        }
+        HWND host = hwnd;
+        worker = std::thread([run_hour, host]() {
+            const int rc = run_hour();
+            g_hour_rc.store(rc);
+            if (host) {
+                PostMessageW(host, WM_HOUR_DONE, static_cast<WPARAM>(rc), 0);
+            }
+        });
+    };
 
     hr = CreateCoreWebView2EnvironmentWithOptions(
         nullptr, user_data.c_str(), nullptr,
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
-            [hwnd, ui_wide, fallback](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+            [hwnd, ui_wide, fallback, live, start_hour](HRESULT result,
+                                                        ICoreWebView2Environment* env) -> HRESULT {
                 if (FAILED(result) || !env) {
                     show_runtime_error();
                     DestroyWindow(hwnd);
                     return result;
                 }
+                g_env = env;
                 return env->CreateCoreWebView2Controller(
                     hwnd,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-                        [hwnd, ui_wide, fallback](HRESULT result,
-                                                  ICoreWebView2Controller* controller) -> HRESULT {
+                        [hwnd, ui_wide, fallback, live, start_hour](
+                            HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                             if (FAILED(result) || !controller) {
                                 show_runtime_error();
                                 DestroyWindow(hwnd);
@@ -151,6 +299,27 @@ int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir) {
                                 settings->put_AreDefaultContextMenusEnabled(TRUE);
                                 settings->put_AreDevToolsEnabled(FALSE);
                             }
+
+                            g_webview->add_NavigationCompleted(
+                                Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                                    [live, start_hour](ICoreWebView2*,
+                                                       ICoreWebView2NavigationCompletedEventArgs* args)
+                                        -> HRESULT {
+                                        BOOL ok = TRUE;
+                                        if (args) {
+                                            args->get_IsSuccess(&ok);
+                                        }
+                                        if (ok) {
+                                            g_page_ready.store(true);
+                                            drain_host_queue();
+                                            if (live) {
+                                                start_hour();
+                                            }
+                                        }
+                                        return S_OK;
+                                    })
+                                    .Get(),
+                                nullptr);
 
                             ComPtr<ICoreWebView2_3> wv3;
                             if (SUCCEEDED(g_webview.As(&wv3))) {
@@ -182,9 +351,20 @@ int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir) {
         DispatchMessageW(&msg);
     }
 
+    if (worker.joinable()) {
+        worker.join();
+    }
+
+    g_page_ready.store(false);
+    g_shared.Reset();
     g_webview.Reset();
     g_controller.Reset();
+    g_env.Reset();
+    g_hwnd = nullptr;
     if (did_init) CoUninitialize();
+    if (live) {
+        return g_hour_rc.load();
+    }
     return static_cast<int>(msg.wParam);
 }
 

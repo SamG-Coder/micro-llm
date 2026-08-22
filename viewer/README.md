@@ -1,18 +1,25 @@
 # viewer
 
-Sample-only hotspot map. No live attach. No PID. No hour.mlpt. No `C:\models`.
+Hotspot map. Sample ring when the exe opens with no args / `--ui`. Live
+hour when the host posts HTR1 records (`chrome.webview` message /
+`window.__htr1Push`). No npm at runtime. No PID scrape.
 
 Paints [docs/HOOK_RING.md](../docs/HOOK_RING.md). 64-layer 3+1 hybrid (16 groups of 3 DeltaNet packs + 1 Gated Attention). Packs are global 0..47, `layer = 4*group+slot`. Not 17408 cubes.
 
 The map is a **dark 3D volume** — star field, not a nightclub, not a bin grid. Outgoing words/ids are quiet streaks + dim glyphs through the volume. Spine is a dim point (spark then heat, never off, never a cube). A kept pack that spiked is a brief point or streak, not a cube tick. Fired FFN bits are points or streaks in the layer volume. Same HTR1 bins, no standing cube grid. A zero bit stays dark. No bloom pass.
 
-Replay is a generated HTR1 ring (depth ≤ 64). C++ will write this layout later. This package only consumes it.
+Replay is a generated HTR1 ring (depth ≤ 64) until a live record arrives.
+The sample `setInterval` is cleared on the first host frame. Tokens move
+only when a real record is pushed. C++ encodes this layout from TraceHooks.
 
 Labeled keep-mask: [sample/sample_keep_mask.json](sample/sample_keep_mask.json). Keep vs dropped only. No state field. Not a measured remnant. Dropped channels/packs are not present. Live flash still comes only from the sample hook ring.
 
 ## Run (no npm)
 
-The committed snapshot is [harness/ui/](../harness/ui/). On Windows, `micro-llm-trace.exe` (no args or `--ui`) or `micro-llm-view.exe` opens it in WebView2. Do not run `npm` to see the map.
+The committed snapshot is [harness/ui/](../harness/ui/). On Windows,
+`micro-llm-trace.exe` (no args or `--ui`) opens the sample map.
+`--model` / `--ui --model` opens the live hour window. Do not run `npm`
+to see the map.
 
 ## Rebuild the snapshot (maintainers)
 
@@ -39,12 +46,15 @@ Unwired / dead / fired / weak / floor are not painted. Those five states need ML
 
 ## 15.2 bar
 
-Corner chrome under the volume. Labeled example only — not a measured remnant, not live VRAM, not a serve budget: 10.8 + 0.9 + KV under 15.2. `serve_ok`, no vision, ctx 8192 + token. Green. The bar barely moves on purpose. Do not treat 10.8 as a real remnant.
+Sample (no live attach): labeled example 10.8 + 0.9 + KV. Not a remnant.
+
+Live: **card stack** = pinned GA weights (~0.6 GiB) + 0.9 CUDA + KV.
+Not the 10.8 sample, not the host GGUF file size.
 
 ## What it does not
 
-- Attach to a process or PID
-- Open a WebSocket
+- Attach to a process or PID (the exe posts records; no PID scrape)
+- Drive tokens from a 16/48/160ms timer while live
 - Invent glow for a zero bit
 - Keep more than 64 records
 - Put `n_fired` / sumsq / keep-mask / gigabytes in the ring

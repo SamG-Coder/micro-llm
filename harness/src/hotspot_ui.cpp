@@ -1,5 +1,6 @@
 #include "micro_llm/hotspot_ui.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -18,7 +19,10 @@
 #endif
 
 #ifdef MICRO_LLM_HAS_WEBVIEW2
-int micro_llm_run_hotspot_ui_win32(const std::string& ui_dir);
+int micro_llm_run_hotspot_ui_win32(const micro_llm::HotspotUiOptions& opt,
+                                   const std::string& ui_dir);
+void micro_llm_hotspot_win32_push_htr1(const uint8_t* rec, size_t nbytes);
+void micro_llm_hotspot_win32_push_json(const std::string& json_utf8);
 #endif
 
 namespace micro_llm {
@@ -110,6 +114,28 @@ std::string hotspot_ui_dir(std::string* err) {
     return {};
 }
 
+void hotspot_live_push_htr1(const uint8_t* rec, size_t nbytes) {
+#ifdef MICRO_LLM_HAS_WEBVIEW2
+    micro_llm_hotspot_win32_push_htr1(rec, nbytes);
+#else
+    (void)rec;
+    (void)nbytes;
+#endif
+}
+
+std::atomic<bool>& hotspot_live_abort() {
+    static std::atomic<bool> abort{false};
+    return abort;
+}
+
+void hotspot_live_push_json(const std::string& json_utf8) {
+#ifdef MICRO_LLM_HAS_WEBVIEW2
+    micro_llm_hotspot_win32_push_json(json_utf8);
+#else
+    (void)json_utf8;
+#endif
+}
+
 int run_hotspot_ui(const HotspotUiOptions& opt) {
     std::string err;
     const std::string dir = hotspot_ui_dir(&err);
@@ -122,12 +148,15 @@ int run_hotspot_ui(const HotspotUiOptions& opt) {
         return 0;
     }
 #ifdef MICRO_LLM_HAS_WEBVIEW2
-    return micro_llm_run_hotspot_ui_win32(dir);
+    return micro_llm_run_hotspot_ui_win32(opt, dir);
 #else
     std::fprintf(stderr,
                  "micro-llm-trace: the native hotspot window is Windows + WebView2.\n"
                  "Evergreen runtime: https://go.microsoft.com/fwlink/p/?LinkId=2124703\n"
                  "Static files are already committed; do not run npm to open the map.\n");
+    if (opt.live && opt.run_hour) {
+        return opt.run_hour();
+    }
     return 0;
 #endif
 }

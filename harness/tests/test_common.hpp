@@ -35,3 +35,5 @@ void test_live_forward_backends(TestContext& ctx);
 void test_graph_hook_names(TestContext& ctx);
 void test_gguf_serve_gate(TestContext& ctx);
 void test_hotspot_ui_files(TestContext& ctx);
+void test_hook_ring_encode(TestContext& ctx);
+void test_hour_cli_resolve(TestContext& ctx);
