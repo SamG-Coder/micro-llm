@@ -6,6 +6,8 @@ Paints [docs/HOOK_RING.md](../docs/HOOK_RING.md). 64-layer 3+1 hybrid (16 groups
 
 Replay is a generated HTR1 ring (depth ≤ 64). C++ will write this layout later. This package only consumes it.
 
+Labeled keep-mask: [sample/sample_keep_mask.json](sample/sample_keep_mask.json). Keep vs dropped only. No state field. Not a measured remnant. Dropped channels/packs are not present. Live flash still comes only from the sample hook ring.
+
 ## Run
 
 ```bash
@@ -24,16 +26,16 @@ npm test
 
 From each hook-ring record, and only from those bits:
 
-- FFN heat-strip bins that have a fired bit this token (flash, then fade). A zero bit does not flash. A quiet layer this token is not-this-token, not unwired.
-- Pack nodes whose `pack_spike` bit is set. Pulse from the spike mask only. Locked/live/no-op come later.
+- FFN heat-strip bins that have a fired bit this token on a kept channel (flash, then fade). A zero bit does not flash. A dropped channel is not present. A quiet layer this token is not-this-token, not unwired.
+- Pack nodes whose `pack_spike` bit is set, if the pack is kept. Dropped packs (sample: 10, 22, 33) are not present. Pulse from the spike mask only.
 - Vocab strip on `sampled_id` and top-k. Rarer ids brighter. Toy vocab decodes a few ids; everything else prints the id.
 - Spine (16 Gated Attention blocks) always lit. Each token sparks it, then the spark fades into heat. Spine never goes off. Spine lighting is not from the hook ring.
 
-Unwired / dead / weak / floor are not decided here. Unwired is MLPT total `n_fired==0`. There is no MLPT in this tree.
+Unwired / dead / fired / weak / floor are not painted. Those five states need MLPT scores + the hook ring. There is no MLPT in this tree. The keep-mask has no state field.
 
 ## 15.2 bar
 
-Under the map. The only memory truth: remnant weights + 0.9 CUDA + KV as ctx grows. Sample is a stable serve-like stack (11.5 GiB weights, `serve_ok`, no vision, ctx 8192 + token). Green under 15.2. Yellow inside 0.5GB of the cap. Red if `serve_ok` is false or vision is on. Heat is session energy, not gigabytes. The bar barely moves on purpose.
+Under the map. The only memory truth: remnant weights + 0.9 CUDA + KV as ctx grows. Labeled example only — not a measured remnant: 10.8 + 0.9 + 0.5 = 12.2 under 15.2. `serve_ok`, no vision, ctx 8192 + token. Green. Yellow inside 0.5GB of the cap. Red if `serve_ok` is false or vision is on. Heat is session energy, not gigabytes. The bar barely moves on purpose. Do not treat 10.8 as a real remnant.
 
 ## What it does not
 

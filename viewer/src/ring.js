@@ -29,7 +29,10 @@ import {
   channelBitIndex,
   ffnBinIndex,
 } from "./constants.js";
+import { SAMPLE_KEEP_CHANNEL_RANGES, expandRanges } from "./keepmask.js";
 import { RARE_ID, SAMPLE_IDS, SPECIAL_TOKEN_INDEX } from "./vocab.js";
+
+const SAMPLE_KEPT_CHANNELS = expandRanges(SAMPLE_KEEP_CHANNEL_RANGES);
 
 export { RECORD_BYTES };
 
@@ -187,10 +190,18 @@ export function packSpikeBit(packSpike, pack) {
   return (packSpike & (1n << BigInt(pack))) !== 0n;
 }
 
-export function firedBinsFromBitset(ffnFired) {
+export function firedBinsFromBitset(ffnFired, mask = null) {
   const bins = new Uint8Array(N_LAYERS * FFN_BINS_PER_LAYER);
   for (let layer = 0; layer < N_LAYERS; layer++) {
     const base = layer * N_FFN;
+    if (mask) {
+      for (const ch of mask.keepChannels[layer]) {
+        if (bitTest(ffnFired, base + ch)) {
+          bins[layer * FFN_BINS_PER_LAYER + ffnBinIndex(ch)] = 1;
+        }
+      }
+      continue;
+    }
     for (let ch = 0; ch < N_FFN; ch++) {
       if (bitTest(ffnFired, base + ch)) {
         bins[layer * FFN_BINS_PER_LAYER + ffnBinIndex(ch)] = 1;
@@ -223,14 +234,20 @@ export function lastFiredLayer(ffnFired) {
 }
 
 // Layer with the most fired channels this token. Quiet = not-this-token.
-export function hottestLayerThisToken(ffnFired) {
+export function hottestLayerThisToken(ffnFired, mask = null) {
   let best = null;
   let bestN = 0;
   for (let layer = 0; layer < N_LAYERS; layer++) {
     let n = 0;
     const base = layer * N_FFN;
-    for (let ch = 0; ch < N_FFN; ch++) {
-      if (bitTest(ffnFired, base + ch)) n++;
+    if (mask) {
+      for (const ch of mask.keepChannels[layer]) {
+        if (bitTest(ffnFired, base + ch)) n++;
+      }
+    } else {
+      for (let ch = 0; ch < N_FFN; ch++) {
+        if (bitTest(ffnFired, base + ch)) n++;
+      }
     }
     if (n > bestN) {
       bestN = n;
@@ -257,7 +274,14 @@ export function generateSampleRecords(seed = 42, nTokens = 48) {
       if (rng() < 0.07) continue;
       const nFire = 2 + Math.floor(rng() * 4); // 2..5
       for (let i = 0; i < nFire; i++) {
-        fires.push({ layer, channel: Math.floor(rng() * N_FFN) });
+        fires.push({
+          layer,
+          channel: SAMPLE_KEPT_CHANNELS[Math.floor(rng() * SAMPLE_KEPT_CHANNELS.length)],
+        });
+      }
+      // A dropped-channel fire must not paint (bin is not present).
+      if (rng() < 0.2) {
+        fires.push({ layer, channel: 200 + Math.floor(rng() * 700) });
       }
     }
 

@@ -40,5 +40,7 @@ describe("15.2 serve bar", () => {
     assert.equal(b.color, "green");
     assert.equal(b.kvBytes - a.kvBytes, 47 * 65536);
     assert.ok((b.stack - a.stack) / a.usable < 0.003);
+    assert.ok(a.stack / GIB < 12.3);
+    assert.ok(a.stack / GIB > 12.1);
   });
 });

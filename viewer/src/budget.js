@@ -1,12 +1,13 @@
 // Memory's 15.2 bar. The only memory truth. Heat is not gigabytes.
-// Stack = weights + 0.9 CUDA + KV(ctx). Sample is a stable serve-like remnant.
+// Stack = weights + 0.9 CUDA + KV(ctx). Labeled example, not a measured remnant.
 
 export const GIB = 1024 ** 3;
 export const CUDA_SCRATCH_BYTES = Math.trunc(0.9 * GIB);
 export const SERVE_USABLE_HEADLESS_BYTES = Math.trunc(15.2 * GIB);
 export const YELLOW_BAND_BYTES = Math.trunc(0.5 * GIB);
 export const KV_BYTES_PER_TOKEN_FP16 = 65536;
-export const SAMPLE_WEIGHT_BYTES = Math.trunc(11.5 * GIB);
+// Labeled example only. Not a measured remnant.
+export const SAMPLE_WEIGHT_BYTES = Math.trunc(10.8 * GIB);
 export const SAMPLE_BASE_CTX = 8192;
 
 export function kvBytes(ctx, perToken = KV_BYTES_PER_TOKEN_FP16) {

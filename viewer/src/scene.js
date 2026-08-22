@@ -26,7 +26,7 @@ function hex(n) {
   return new THREE.Color(n);
 }
 
-export function createMap(container) {
+export function createMap(container, { presentBins = null, presentPacks = null } = {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setClearColor(0x07080c, 1);
@@ -67,7 +67,8 @@ export function createMap(container) {
     const layer = layerFromPackId(p);
     dummy.position.set(-1.15, layerY(layer), 0);
     dummy.rotation.set(0.2, 0.4, 0);
-    dummy.scale.set(1, 1, 1);
+    const shown = !presentPacks || presentPacks[p];
+    dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
     dummy.updateMatrix();
     packs.setMatrixAt(p, dummy.matrix);
     packs.setColorAt(p, hex(0x243044));
@@ -105,7 +106,8 @@ export function createMap(container) {
     for (let b = 0; b < FFN_BINS_PER_LAYER; b++) {
       const i = layer * FFN_BINS_PER_LAYER + b;
       dummy.position.set(0.7 + b * 0.12, layerY(layer), 0);
-      dummy.scale.set(1, 1, 1);
+      const shown = !presentBins || presentBins[i];
+      dummy.scale.set(shown ? 1 : 0, shown ? 1 : 0, shown ? 1 : 0);
       dummy.updateMatrix();
       ffn.setMatrixAt(i, dummy.matrix);
       ffn.setColorAt(i, hex(0x121722));
@@ -144,12 +146,13 @@ export function createMap(container) {
 
   function applyToken(record, bins) {
     for (let i = 0; i < FFN_COUNT; i++) {
-      if (bins[i]) {
+      if (bins[i] && (!presentBins || presentBins[i])) {
         ffnFlash[i] = 1;
         ffnHeat[i] = 0.35;
       }
     }
     for (let p = 0; p < N_PACKS; p++) {
+      if (presentPacks && !presentPacks[p]) continue;
       if (packSpikeBit(record.packSpike, p)) {
         packFlash[p] = 1;
       }
@@ -180,8 +183,12 @@ export function createMap(container) {
       packs.setColorAt(p, tmpColor);
       const layer = layerFromPackId(p);
       dummy.position.set(-1.15, layerY(layer), 0);
-      const s = 1 + pulse * 0.9;
-      dummy.scale.set(s, s, s);
+      if (presentPacks && !presentPacks[p]) {
+        dummy.scale.set(0, 0, 0);
+      } else {
+        const s = 1 + pulse * 0.9;
+        dummy.scale.set(s, s, s);
+      }
       dummy.rotation.set(0.2, 0.4 + pulse * 1.2, 0);
       dummy.updateMatrix();
       packs.setMatrixAt(p, dummy.matrix);
