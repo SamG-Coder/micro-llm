@@ -111,6 +111,11 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, causes.find("SPLIT_CAUSE kind=backend_transition") != std::string::npos);
     CHECK(ctx, causes.find("SPLIT_CAUSE kind=unsupported_op") != std::string::npos);
     CHECK(ctx, causes.find("SPLIT_CAUSE kind=other") != std::string::npos);
+    const std::string why532 =
+        format_split_why_line(kMeasured5080ReserveSplits532, "blk.63.ffn_gate.weight", "CPU");
+    CHECK(ctx, why532.find("SPLIT_WHY n=532") == 0);
+    CHECK(ctx, why532.find("bs=1") != std::string::npos);
+    CHECK(ctx, why532.find("last=blk.63.ffn_gate.weight") != std::string::npos);
     const std::string why =
         format_split_why_line(kMeasured5080ReserveSplits, "blk.63.ffn_down.weight",
                              "CPU_Mapped");
@@ -118,6 +123,14 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, why.find("last=blk.63.ffn_down.weight") != std::string::npos);
     CHECK(ctx, why.find("last_buft=CPU_Mapped") != std::string::npos);
     CHECK(ctx, kMeasured5080ReserveSplits532 == 532);
+    const std::string hop =
+        format_ffn_hop_line(63, "blk.63.ffn_gate.weight", "CPU", "blk.63.ffn_gate.weight",
+                            "CPU_Mapped", SplitCauseKind::Placement);
+    CHECK(ctx, hop.find("FFN_HOP layer=63") == 0);
+    CHECK(ctx, hop.find("tensor=blk.63.ffn_gate.weight") != std::string::npos);
+    CHECK(ctx, hop.find("view_src=blk.63.ffn_gate.weight") != std::string::npos);
+    CHECK(ctx, hop.find("view_buft=CPU_Mapped") != std::string::npos);
+    CHECK(ctx, hop.find("cause=placement/buffer") != std::string::npos);
     CHECK(ctx, kMeasured5080Cuda0BindMiB == 13110ull);
     SplitLedger hooked = sl;
     hooked.trace_off = true;

@@ -83,12 +83,23 @@ LiveForwardStatus StubLiveForwardBackend::run(TraceHooks& hooks, TraceStreamer& 
                      .c_str());
     std::fprintf(stderr, "%s\n", format_split_ledger(sl).c_str());
     std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080ReserveSplits532, "blk.63.ffn_gate.weight",
+                                       "CPU")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
                  format_split_why_line(kMeasured5080ReserveSplits, "blk.63.ffn_down.weight",
                                        "CPU_Mapped")
                      .c_str());
     std::fprintf(stderr, "%s\n",
-                 format_split_causes_block(sl, "blk.63.ffn_down.weight", "CPU_Mapped", 63)
+                 format_ffn_hop_line(63, "blk.63.ffn_gate.weight", "CPU", "none", "-",
+                                     SplitCauseKind::Placement)
                      .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_ffn_hop_line(63, "blk.63.ffn_up.weight", "CPU", "none", "-",
+                                     SplitCauseKind::Placement)
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_causes_block(sl, "blk.63.ffn_gate.weight", "CPU", 63).c_str());
     std::fprintf(stderr, "%s\n", format_ffn_gemm_line(ffn_gemm_all_cuda()).c_str());
     std::fprintf(stderr, "%s\n", format_pcie_bound_line(ffn_stream_layers(n_park)).c_str());
 

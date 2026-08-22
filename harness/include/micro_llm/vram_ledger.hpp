@@ -109,7 +109,7 @@ inline constexpr SplitLedger split_ledger_trace_off_park_stream(
     s.backend_transition = 1;  // CUDA stack -> host lm_head
     s.unsupported_op = 0;
     (void)n_stream;
-    // Leftover CPU / CPU_Mapped MUL_MAT srcs (blk.63 ffn_down). 0 after bind.
+    // Leftover CPU / CPU_Mapped MUL_MAT srcs (blk.63 ffn_gate/up). 0 after bind.
     s.placement_buffer = cpu_ffn_srcs;
     s.other = 0;
     return s;
@@ -218,12 +218,28 @@ inline std::string format_split_cause_line(SplitCauseKind k, uint32_t n, const c
 
 inline std::string format_split_why_line(uint32_t n_splits, const char* last_tensor,
                                         const char* last_buft) {
-    char buf[384];
+    char buf[448];
     std::snprintf(buf, sizeof(buf),
                   "SPLIT_WHY n=%u bs=1 last=%s last_buft=%s "
-                  "(638 = CPU_Mapped blk.63 ffn_down; gate/up still host)",
+                  "(532>340 = CPU src/view on blk.63 ffn_gate/up; "
+                  "638 = down CPU_Mapped)",
                   n_splits, last_tensor && last_tensor[0] ? last_tensor : "-",
                   last_buft && last_buft[0] ? last_buft : "-");
+    return buf;
+}
+
+// Name the tensor + backend still off CUDA. view_src is the usual 532 hop:
+// weight poked to a slot, parent mmap (CPU_Mapped) still hosts MUL_MAT.
+inline std::string format_ffn_hop_line(int32_t layer, const char* tensor, const char* buft,
+                                      const char* view_src, const char* view_buft,
+                                      SplitCauseKind cause) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+                  "FFN_HOP layer=%d tensor=%s buft=%s view_src=%s view_buft=%s "
+                  "cause=%s (532 last crossing = gate/up src or view still host)",
+                  layer, tensor && tensor[0] ? tensor : "-", buft && buft[0] ? buft : "-",
+                  view_src && view_src[0] ? view_src : "none",
+                  view_buft && view_buft[0] ? view_buft : "-", split_cause_kind_name(cause));
     return buf;
 }
 
