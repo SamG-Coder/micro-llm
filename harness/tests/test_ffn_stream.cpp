@@ -265,6 +265,20 @@ void test_ffn_stream_budget(TestContext& ctx) {
         }
     }
     CHECK(ctx, hit_post63);
+    bool hit_output_norm = false;
+    bool hit_output_weight_gpu = false;
+    for (const auto& p : gpu) {
+        const std::regex re(p);
+        if (std::regex_search(std::string("output_norm.weight"), re)) {
+            hit_output_norm = true;
+        }
+        if (std::regex_search(std::string("output.weight"), re) &&
+            p.find("output_norm") == std::string::npos) {
+            hit_output_weight_gpu = true;
+        }
+    }
+    CHECK(ctx, hit_output_norm);
+    CHECK(ctx, !hit_output_weight_gpu);
     CHECK(ctx, classify_backend_buft_name("CUDA_Host") == BuftKind::CudaHost);
     CHECK(ctx, classify_backend_buft_name("CUDA0") == BuftKind::Cuda);
     CHECK(ctx, classify_backend_buft_name("CPU") == BuftKind::Cpu);
@@ -284,6 +298,19 @@ void test_ffn_stream_budget(TestContext& ctx) {
         }
     }
     CHECK(ctx, !cpu_ffn && !cpu_ssm && cpu_head);
+    bool cpu_output_weight = false;
+    bool cpu_output_norm = false;
+    for (const auto& p : cpu) {
+        const std::regex re(p);
+        if (std::regex_search(std::string("output.weight"), re)) {
+            cpu_output_weight = true;
+        }
+        if (std::regex_search(std::string("output_norm.weight"), re)) {
+            cpu_output_norm = true;
+        }
+    }
+    CHECK(ctx, cpu_output_weight);
+    CHECK(ctx, !cpu_output_norm);
 
     StreamerConfig scfg;
     scfg.ffn_scratch_bytes = 4096;
@@ -417,6 +444,26 @@ void test_ffn_stream_budget(TestContext& ctx) {
     CHECK(ctx, av_node.find("src0_data=integer_offset") != std::string::npos);
     CHECK(ctx, av_node.find("src1=output.weight") != std::string::npos);
     CHECK(ctx, av_node.find("src1_data=in_buffer") != std::string::npos);
+    CHECK(ctx, kMeasured5080TailSplitKv == 638);
+    CHECK(ctx, kMeasured5080TailSplitResidual == 639);
+    CHECK(ctx, kMeasured5080TailSplitLayerNorm == 640);
+    CHECK(ctx, kMeasured5080TailSplitOutputNorm == 641);
+    CHECK(ctx, kMeasured5080TailSplitLmHead == 642);
+    const std::string tail641 = format_tail_split_line(
+        641, "output_norm", "RMS_NORM", "CUDA0", "in_buffer", "norm-63", "CUDA0", "in_buffer",
+        "output_norm.weight", "CUDA0", "in_buffer");
+    CHECK(ctx, tail641.find("TAIL_SPLIT n=641") == 0);
+    CHECK(ctx, tail641.find("name=output_norm") != std::string::npos);
+    CHECK(ctx, tail641.find("op=RMS_NORM") != std::string::npos);
+    CHECK(ctx, tail641.find("buft=CUDA0") != std::string::npos);
+    CHECK(ctx, tail641.find("data=in_buffer") != std::string::npos);
+    CHECK(ctx, tail641.find("src0=norm-63") != std::string::npos);
+    const std::string collapse =
+        format_tail_collapse_line("CUDA0", "CPU_Mapped");
+    CHECK(ctx, collapse.find("TAIL_COLLAPSE") == 0);
+    CHECK(ctx, collapse.find("output_norm.weight=CUDA0") != std::string::npos);
+    CHECK(ctx, collapse.find("output.weight=CPU_Mapped") != std::string::npos);
+    CHECK(ctx, format_split_why_line(641, "output_norm", "CUDA0").find("SPLIT_WHY n=641") == 0);
     const std::string av =
         format_ffn_av_split_line(63, "blk.63.ffn_down.weight", "CUDA0",
                                  "blk.63.ffn_down.weight", "CPU_Mapped", "stale_host", 0);

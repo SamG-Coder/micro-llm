@@ -43,6 +43,13 @@ inline constexpr uint32_t kMeasured5080Stream7 = 7;
 inline constexpr uint64_t kMeasured5080Cuda0BindMiB = 13110ull;
 inline constexpr uint32_t kMeasured5080ReserveSplits = 638;
 inline constexpr uint32_t kMeasured5080ReserveSplits532 = 532;
+// James 974b0c3: AV after the split dump. Tail is backend_transition,
+// not FFN. 62/63 A/B stayed CUDA0 in_buffer.
+inline constexpr uint32_t kMeasured5080TailSplitKv = 638;
+inline constexpr uint32_t kMeasured5080TailSplitResidual = 639;
+inline constexpr uint32_t kMeasured5080TailSplitLayerNorm = 640;
+inline constexpr uint32_t kMeasured5080TailSplitOutputNorm = 641;
+inline constexpr uint32_t kMeasured5080TailSplitLmHead = 642;
 inline constexpr uint64_t kHourGraphReserveBytes = 1026ull * 1024ull * 1024ull;
 // Slot A/B FIRST: 160 + 160 = 320, pair budget ≈ 340 MiB with align slack.
 // Then park leftover FFN under 14 GiB after KV@20k (0–56). Stream 57–63:

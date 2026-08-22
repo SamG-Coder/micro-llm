@@ -157,6 +157,40 @@ inline std::string format_reserve_av_node_line(const char* tag, const char* name
     return buf;
 }
 
+// James 974b0c3 named the AV: #638 CUDA0 KV, #639 CPU residual,
+// #640 CUDA0 layer-norm, #641 CPU output_norm 180K. Print those
+// four. Not a split-ledger rewrite.
+inline std::string format_tail_split_line(uint32_t n, const char* name, const char* op,
+                                         const char* buft, const char* data_kind,
+                                         const char* src0, const char* src0_buft,
+                                         const char* src0_data, const char* src1,
+                                         const char* src1_buft, const char* src1_data) {
+    char buf[768];
+    std::snprintf(buf, sizeof(buf),
+                  "TAIL_SPLIT n=%u name=%s op=%s buft=%s data=%s "
+                  "src0=%s src0_buft=%s src0_data=%s src1=%s src1_buft=%s src1_data=%s",
+                  n, name && name[0] ? name : "-", op && op[0] ? op : "-",
+                  buft && buft[0] ? buft : "-", data_kind && data_kind[0] ? data_kind : "-",
+                  src0 && src0[0] ? src0 : "none", src0_buft && src0_buft[0] ? src0_buft : "-",
+                  src0_data && src0_data[0] ? src0_data : "-", src1 && src1[0] ? src1 : "none",
+                  src1_buft && src1_buft[0] ? src1_buft : "-",
+                  src1_data && src1_data[0] ? src1_data : "-");
+    return buf;
+}
+
+inline std::string format_tail_collapse_line(const char* output_norm_buft,
+                                            const char* output_weight_buft) {
+    char buf[384];
+    std::snprintf(buf, sizeof(buf),
+                  "TAIL_COLLAPSE residual->norm->output_norm want=CUDA0 "
+                  "output_norm.weight=%s output.weight=%s "
+                  "(host lm_head uses a real host buffer; no CPU 180K norm "
+                  "after CUDA0 layer-norm; extra_park=0 hooks=0)",
+                  output_norm_buft && output_norm_buft[0] ? output_norm_buft : "-",
+                  output_weight_buft && output_weight_buft[0] ? output_weight_buft : "-");
+    return buf;
+}
+
 // One A/B slot = one streamed layer’s gate+up+down. 254e10c: down
 // offset past 160. If 160 < aligned sum, the slot MUST grow. Extra
 // align slack so down is not flush against the cap.

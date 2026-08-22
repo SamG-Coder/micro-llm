@@ -95,6 +95,7 @@ const char* buft_name_of(const ggml_tensor* t) {
 TensorDataKind tensor_data_kind_of(const ggml_tensor* t);
 void print_reserve_av_node(const ggml_tensor* t, const char* tag);
 void print_reserve_av_candidates(const llama_model* model, const char* when);
+void print_tail_splits(const llama_model* model, const char* when);
 
 ggml_tensor* find_layer_tensor(const llama_model* model, uint32_t layer, const char* suffix) {
     char name[96];
@@ -505,6 +506,102 @@ void print_reserve_av_candidates(const llama_model* model, const char* when) {
     }
 }
 
+// Print-only. James 974b0c3: #638 CUDA0 KV, #639 CPU residual,
+// #640 CUDA0 norm-63, #641 CPU output_norm then AV. Do not retouch A/B.
+void print_tail_splits(const llama_model* model, const char* when) {
+    if (!model || !when) {
+        return;
+    }
+    ggml_tensor* output_norm = llama_model_get_tensor(model, "output_norm.weight");
+    if (!output_norm) {
+        output_norm = llama_model_get_tensor(model, "output_norm");
+    }
+    ggml_tensor* output_w = llama_model_get_tensor(model, "output.weight");
+    ggml_tensor* layer_norm = find_ffn_weight(model, kNLayers - 1, "ffn_norm");
+    if (!layer_norm) {
+        layer_norm = find_layer_tensor(model, kNLayers - 1, "attn_norm.weight");
+    }
+    std::fprintf(stderr, "%s\n",
+                 format_tail_collapse_line(output_norm ? buft_name_of(output_norm) : "missing",
+                                           output_w ? buft_name_of(output_w) : "missing")
+                     .c_str());
+    std::fprintf(stderr, "TAIL_WHEN %s (print-only; hooks=0; A/B untouched)\n", when);
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitKv, "cache_k_l63", "VIEW", "CUDA0",
+                                        "-", "none", "-", "-", "none", "-", "-")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitKv, "cache_v_l63", "VIEW", "CUDA0",
+                                        "-", "none", "-", "-", "none", "-", "-")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080TailSplitKv, "cache_k_l63", "CUDA0").c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitResidual, "attn_residual-63", "ADD",
+                                        "CPU", "-", "none", "-", "-", "none", "-", "-")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080TailSplitResidual, "attn_residual-63", "CPU")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitLayerNorm, "norm-63", "RMS_NORM",
+                                        layer_norm ? buft_name_of(layer_norm) : "CUDA0",
+                                        layer_norm ? tensor_data_kind_name(
+                                                         tensor_data_kind_of(layer_norm))
+                                                   : "-",
+                                        layer_norm ? layer_norm->name : "none",
+                                        layer_norm ? buft_name_of(layer_norm) : "-",
+                                        layer_norm ? tensor_data_kind_name(
+                                                         tensor_data_kind_of(layer_norm))
+                                                   : "-",
+                                        "none", "-", "-")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080TailSplitLayerNorm, "norm-63",
+                                       layer_norm ? buft_name_of(layer_norm) : "CUDA0")
+                     .c_str());
+    if (layer_norm) {
+        print_reserve_av_node(layer_norm, when);
+    }
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitOutputNorm, "output_norm", "RMS_NORM",
+                                        output_norm ? buft_name_of(output_norm) : "missing",
+                                        output_norm ? tensor_data_kind_name(
+                                                          tensor_data_kind_of(output_norm))
+                                                    : "missing",
+                                        output_norm ? output_norm->name : "none",
+                                        output_norm ? buft_name_of(output_norm) : "-",
+                                        output_norm ? tensor_data_kind_name(
+                                                          tensor_data_kind_of(output_norm))
+                                                    : "-",
+                                        "none", "-", "-")
+                     .c_str());
+    std::fprintf(stderr, "%s\n",
+                 format_split_why_line(kMeasured5080TailSplitOutputNorm, "output_norm",
+                                       output_norm ? buft_name_of(output_norm) : "missing")
+                     .c_str());
+    if (output_norm) {
+        print_reserve_av_node(output_norm, when);
+    }
+    std::fprintf(stderr, "%s\n",
+                 format_tail_split_line(kMeasured5080TailSplitLmHead, "output.weight", "MUL_MAT",
+                                        output_w ? buft_name_of(output_w) : "missing",
+                                        output_w ? tensor_data_kind_name(tensor_data_kind_of(output_w))
+                                                 : "missing",
+                                        "result", output_norm ? buft_name_of(output_norm) : "-",
+                                        output_norm ? tensor_data_kind_name(
+                                                          tensor_data_kind_of(output_norm))
+                                                    : "-",
+                                        output_w ? output_w->name : "output.weight",
+                                        output_w ? buft_name_of(output_w) : "-",
+                                        output_w ? tensor_data_kind_name(tensor_data_kind_of(output_w))
+                                                 : "-")
+                     .c_str());
+    if (output_w) {
+        print_reserve_av_node(output_w, when);
+    }
+}
+
 void print_layer_mul_mat_srcs(const llama_model* model, uint32_t layer, uint32_t* cpu_n,
                               const char** last_name, const char** last_buft) {
     static const char* kNeed[] = {"ffn_gate.weight", "ffn_up.weight", "ffn_down.weight",
@@ -871,6 +968,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
     const char* last_62_buft = "CPU";
     print_layer_mul_mat_srcs(model, kNLayers - 2, &cpu_62, &last_62_name, &last_62_buft);
     print_reserve_av_candidates(model, "before_reserve");
+    print_tail_splits(model, "before_reserve");
     clocks.set_real_h2d(ggml_bound >= 6 && streamed_cuda_host_n == 0);
     SplitLedger sl =
         split_ledger_trace_off_park_stream(n_stream, streamed_cuda_host_n, cpu_63);
@@ -928,6 +1026,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         print_split_why(sl, cpu_63, last_63_name, last_63_buft);
         print_layer_mul_mat_srcs(model, kNLayers - 1, &cpu_63, &last_63_name, &last_63_buft);
         print_reserve_av_candidates(model, "reserve_fail");
+        print_tail_splits(model, "reserve_fail");
         llama_model_free(model);
         llama_backend_free();
         st.ok = false;
@@ -944,6 +1043,7 @@ LiveForwardStatus LlamaCppLiveForwardBackend::run(TraceHooks& hooks, TraceStream
         }
     }
     print_reserve_av_candidates(model, "after_reserve");
+    print_tail_splits(model, "after_reserve");
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
