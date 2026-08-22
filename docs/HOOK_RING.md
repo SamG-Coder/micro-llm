@@ -6,11 +6,15 @@ Session heat, `n_fired`, `sumsq`, and `maxabs` stay in the MLPT dump. The keep-m
 
 ## What it is
 
-This token's fired FFN channels, pack residuals, and vocab ids. Paint as a flash, then fade into session heat (session heat comes from the MLPT or from accumulating these records client-side).
+This token's fired FFN channels, pack residuals, and vocab ids. Paint as a flash, then fade into session heat. Session heat is the MLPT. Do not accumulate this ring into a second heat store.
+
+## Hard cap (Memory)
+
+Ring depth is 64 (~8.7MB). Do not keep 20k records (that is 2.8GB). Session heat is the MLPT. The ring is the live window only. Gigabytes stay on the budget bar.
 
 ## Record
 
-Little-endian. One record after a small header if you batch, or a single struct on a ring of N (N=64 is enough).
+Little-endian. One record after a small header if you batch, or a single struct on a ring of 64.
 
 Header (optional, 16 bytes) if dumped as a file:
 
@@ -62,10 +66,11 @@ Sizes:
 - `n_fired`, `sumsq`, `maxabs` (MLPT)
 - `keep_channels` / `keep_packs` / `vocab_remap` (Export after cut)
 - file bytes, CUDA, KV GB (Memory 15.2 bar)
+- 20k-token archive (2.8GB). Ring depth 64 is the cap
 - 17408 cubes
 - fake glow
 - attach to a running hour PID
 
 ## Defaults
 
-`fire_eps` 1e-6. `spike_eps` 0.02. top-k 64 max, 50 is fine. Ring depth 64.
+`fire_eps` 1e-6. `spike_eps` 0.02. top-k 64 max, 50 is fine. Ring depth 64 (hard cap, ~8.7MB).
