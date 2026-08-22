@@ -79,4 +79,5 @@ function step() {
 
 paintBudget(0);
 step();
-setInterval(step, TOKEN_MS);
+if (window.__sampleReplay) clearInterval(window.__sampleReplay);
+window.__sampleReplay = setInterval(step, TOKEN_MS);
