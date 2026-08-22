@@ -64,6 +64,13 @@ int CudaReduceContext::reduce_device(const float*, const float*, float*, uint8_t
     return -1;
 }
 
+int CudaReduceContext::reduce_device_async(const float*, const float*, float*, uint8_t*,
+                                           uint32_t, float) {
+    return -1;
+}
+
+bool CudaReduceContext::sync_stream() { return false; }
+
 int CudaReduceContext::reduce_host(const float*, const float*, float*, uint8_t*,
                                    uint32_t, float) {
     return -1;

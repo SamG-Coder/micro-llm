@@ -30,6 +30,8 @@ void test_layer_hooked_trailer(TestContext& ctx) {
     CHECK(ctx, !hooks.table().layer_was_hooked(0));
     CHECK(ctx, hooks.table().channel(0, 0).n_fired == 0);
     CHECK(ctx, !hooks.table().layer_is_dead(0));
+    CHECK(ctx, hooks.table().layer_keep_full_width(0));
+    CHECK(ctx, hooks.table().count_missing_hooks() == 63);  // all but layer 3
 
     // Hooked + all n_fired==0 => dead.
     hooks.begin_token(1);
@@ -65,5 +67,8 @@ void test_layer_hooked_trailer(TestContext& ctx) {
     CHECK(ctx, loaded.layer_was_hooked(3));
     CHECK(ctx, loaded.layer_is_unwired(0));
     CHECK(ctx, loaded.layer_is_dead(7));
+    CHECK(ctx, loaded.count_missing_hooks() == 62);  // 64 minus hooked 3 and 7
+    CHECK(ctx, loaded.layer_keep_full_width(0));
+    CHECK(ctx, !loaded.layer_keep_full_width(3));
     std::remove(path.c_str());
 }

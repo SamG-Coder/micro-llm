@@ -24,6 +24,8 @@ int main() {
         {"hook_ring_encode", test_hook_ring_encode},
         {"hour_cli_resolve", test_hour_cli_resolve},
         {"ffn_stream_budget", test_ffn_stream_budget},
+        {"residency_plan", test_residency_plan},
+        {"async_htr1_ring", test_async_htr1_ring},
     };
 
     int failed = 0;

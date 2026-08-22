@@ -106,7 +106,11 @@ def weak_keep_min(n_ffn: int = N_FFN, *, recover: bool = False) -> int:
 
 
 def layer_missing_hook(dump: MlptDump, layer: int) -> bool:
-    """True when the layer has no fire evidence and no floor bits."""
+    """True when the FFN hook never ran (n_fired stayed 0, no floor).
+
+    A streamed FFN with n_fired=0 is a missing hook, not a prune — keep
+    all 17408 channels. Do not rank or width-cut that layer.
+    """
     return int(np.asarray(dump.n_fired[layer]).sum()) == 0 and not bool(
         np.asarray(dump.floor[layer]).any()
     )
@@ -211,7 +215,7 @@ def cut_mlpt(
     weak: list[tuple[float, int, float, int, int]] = []
     for layer in range(n_layers):
         if layer_missing_hook(dump, layer):
-            # Hooks never fired this layer. Keep the full width; do not rank.
+            # Missing hook (incl. streamed FFN n_fired=0): keep all 17408.
             keep_channels.append(list(range(n_ffn)))
             continue
         kept: list[int] = []

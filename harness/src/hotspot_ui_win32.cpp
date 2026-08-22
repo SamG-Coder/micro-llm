@@ -17,6 +17,7 @@
 #include <wrl.h>
 #include <WebView2.h>
 
+#include "micro_llm/async_ring.hpp"
 #include "micro_llm/hook_ring.hpp"
 #include "micro_llm/hotspot_ui.hpp"
 
@@ -37,6 +38,7 @@ namespace {
 constexpr UINT WM_HTR1 = WM_APP + 41;
 constexpr UINT WM_HOST_JSON = WM_APP + 42;
 constexpr UINT WM_HOUR_DONE = WM_APP + 43;
+constexpr UINT_PTR kUiDrainTimer = 1;
 
 ComPtr<ICoreWebView2Controller> g_controller;
 ComPtr<ICoreWebView2> g_webview;
@@ -110,24 +112,25 @@ void drain_host_queue() {
     if (!g_webview || !g_page_ready.load()) {
         return;
     }
-    std::vector<std::vector<uint8_t>> recs;
+    // 30-60 Hz consumer. Decode never waits on WebView or JSON.
+    // One record at a time — a 140KB HTR1 must not live as a 4-deep stack array.
+    uint8_t rec[micro_llm::kHtr1RecordBytes];
+    uint32_t n = 0;
+    while (n < 4 && micro_llm::AsyncHtr1Ring::live().try_pop(rec)) {
+        post_one_htr1(rec, micro_llm::kHtr1RecordBytes);
+        ++n;
+    }
     std::vector<std::wstring> jsons;
     {
         std::lock_guard<std::mutex> lock(g_mu);
-        while (!g_htr1.empty()) {
-            recs.push_back(std::move(g_htr1.front()));
-            g_htr1.pop_front();
-        }
         while (!g_json.empty()) {
             jsons.push_back(std::move(g_json.front()));
             g_json.pop_front();
         }
+        g_htr1.clear();
     }
     for (const auto& js : jsons) {
         g_webview->PostWebMessageAsJson(js.c_str());
-    }
-    for (const auto& rec : recs) {
-        post_one_htr1(rec.data(), rec.size());
     }
 }
 
@@ -140,6 +143,12 @@ LRESULT CALLBACK hotspot_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
                 g_controller->put_Bounds(rc);
             }
             return 0;
+        case WM_TIMER:
+            if (wparam == kUiDrainTimer) {
+                drain_host_queue();
+                return 0;
+            }
+            break;
         case WM_HTR1:
         case WM_HOST_JSON:
             drain_host_queue();
@@ -147,6 +156,7 @@ LRESULT CALLBACK hotspot_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
         case WM_HOUR_DONE:
             return 0;
         case WM_DESTROY:
+            KillTimer(hwnd, kUiDrainTimer);
             micro_llm::hotspot_live_abort().store(true);
             g_hwnd = nullptr;
             PostQuitMessage(0);
@@ -169,17 +179,12 @@ void show_runtime_error() {
 }  // namespace
 
 void micro_llm_hotspot_win32_push_htr1(const uint8_t* rec, size_t nbytes) {
-    if (!rec || nbytes == 0) {
+    if (!rec || nbytes < micro_llm::kHtr1RecordBytes) {
         return;
     }
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        g_htr1.emplace_back(rec, rec + nbytes);
-        while (g_htr1.size() > micro_llm::kHtr1RingDepth) {
-            g_htr1.pop_front();
-        }
-    }
-    post_to_hwnd(WM_HTR1);
+    micro_llm::AsyncHtr1Ring::live().try_push(rec);
+    // Do not PostMessage per token. The 16 ms timer drains the ring.
+    (void)nbytes;
 }
 
 void micro_llm_hotspot_win32_push_json(const std::string& json_utf8) {
@@ -233,6 +238,7 @@ int micro_llm_run_hotspot_ui_win32(const micro_llm::HotspotUiOptions& opt,
         return 1;
     }
     g_hwnd = hwnd;
+    SetTimer(hwnd, kUiDrainTimer, micro_llm::kUiDrainPeriodMs, nullptr);
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 

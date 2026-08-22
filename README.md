@@ -38,6 +38,8 @@ First-job quality eval (local coding assistant): [docs/QUALITY.md](docs/QUALITY.
 
 Hotspot map: open `micro-llm-trace.exe` (or `micro-llm-view.exe`) on Windows. No npm. `--ui` / no args is the sample ring. `--model PATH.gguf` (with or without `--ui`) opens the live hour window and decodes. WebView2 Evergreen runtime is required (usually already on Windows 11 / Edge). Source for that page lives in [viewer/](viewer/); the exe hosts the committed snapshot in [harness/ui/](harness/ui/). Per-token flash: [docs/HOOK_RING.md](docs/HOOK_RING.md).
 
+Trace-hour decode (5080 park+stream, telemetry, why 3.5 tok/s): [docs/TRACE_PERF.md](docs/TRACE_PERF.md).
+
 ## Build
 
 cmake -S harness -B harness/build && cmake --build harness/build -j && ctest --test-dir harness/build --output-on-failure

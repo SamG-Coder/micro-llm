@@ -1,4 +1,5 @@
 #include "micro_llm/hotspot_ui.hpp"
+#include "micro_llm/async_ring.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -115,6 +116,9 @@ std::string hotspot_ui_dir(std::string* err) {
 }
 
 void hotspot_live_push_htr1(const uint8_t* rec, size_t nbytes) {
+    if (rec && nbytes >= kHtr1RecordBytes) {
+        AsyncHtr1Ring::live().try_push(rec);
+    }
 #ifdef MICRO_LLM_HAS_WEBVIEW2
     micro_llm_hotspot_win32_push_htr1(rec, nbytes);
 #else

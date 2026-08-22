@@ -45,6 +45,8 @@ add_library(micro_llm
   src/llama_forward.cpp
   src/hook_ring.cpp
   src/trace_cli.cpp
+  src/residency.cpp
+  src/perf_telemetry.cpp
 )
 target_include_directories(micro_llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(micro_llm PUBLIC cxx_std_17)
@@ -201,6 +203,8 @@ add_executable(micro_llm_tests
   tests/test_hook_ring.cpp
   tests/test_hour_cli.cpp
   tests/test_ffn_stream.cpp
+  tests/test_residency.cpp
+  tests/test_async_ring.cpp
 )
 target_include_directories(micro_llm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(micro_llm_tests PRIVATE micro_llm micro_llm_ui)

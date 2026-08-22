@@ -2,11 +2,10 @@
 
 // Trace-path streamer. Not a 27B engine.
 //
-// Pin: CUDA + 16 Gated Attention blocks + KV + DeltaNet state + embed.
-// Park as many FFN layers as fit under 14GB (GA+KV + 0.9 + parked + stream).
-// Stream UNPARKED FFN one layer at a time (host ping-pong, one VRAM slot).
-// Never park all 64. ngl is not the pin (not 16, not 99). 15.2 is hard.
-// DeltaNet stays CPU. MTP extra block is not in this stack.
+// Pin: CUDA + 16 Gated Attention blocks + KV + DeltaNet weights/state.
+// Park as many FFN layers as fit under 14GB. Stream UNPARKED FFN
+// (CUDA_Host / two pinned scratches + prefetch n+1). Never park all 64.
+// ngl is not the pin (not 16, not 99). 15.2 is hard. Embed is CUDA_Host.
 // Do NOT pin lm_head next to embed; lm_head only at logits.
 // No mid-session shrink.
 
@@ -35,7 +34,7 @@ struct StreamerConfig {
     uint32_t n_layers = kNLayers;
     uint32_t n_parked_ffn = 0;  // layers [0, n) stay on CUDA. Hour sets this.
     bool pin_host_pages = true;
-    bool log_cuda_ffn = false;  // park line + first-token binds, then counts
+    bool log_cuda_ffn = false;
 };
 
 class TraceStreamer {
@@ -70,7 +69,6 @@ public:
     size_t scratch_bytes() const { return cfg_.ffn_scratch_bytes; }
     // Host double-buffer peak (two scratch pages). Not VRAM.
     size_t peak_ffn_bytes() const { return 2u * cfg_.ffn_scratch_bytes; }
-    // VRAM: one FFN workspace, never two parked layers.
     size_t peak_ffn_vram_bytes() const { return cfg_.ffn_scratch_bytes; }
     size_t ffn_vram_bytes() const {
         return compute_layer_ != ~0u ? cfg_.ffn_scratch_bytes : 0;

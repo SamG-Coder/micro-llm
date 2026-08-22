@@ -28,11 +28,7 @@ export function decodeHostPayload(data) {
     return { kind: "attach", attach: data };
   }
   if (data.type === "live-stats") {
-    return {
-      kind: "stats",
-      tokensPerSec: data.tokensPerSec,
-      nTokens: data.nTokens,
-    };
+    return { kind: "stats", stats: data };
   }
   if (data.type === "htr1" && data.b64) {
     const bin = Uint8Array.from(atob(data.b64), (c) => c.charCodeAt(0));

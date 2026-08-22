@@ -85,6 +85,17 @@ GraphHookSession::GraphHookSession(TraceHooks& hooks, TraceStreamer& streamer)
 void GraphHookSession::begin_token(uint32_t token_index) {
     hooks_.begin_token(token_index);
     pending_gate_layer_ = -1;
+    ffn_seen_mask_ = 0;
+}
+
+uint32_t GraphHookSession::missing_hooks_this_token() const {
+    uint32_t n = 0;
+    for (uint32_t layer = 0; layer < kNLayers; ++layer) {
+        if ((ffn_seen_mask_ & (uint64_t{1} << layer)) == 0) {
+            ++n;
+        }
+    }
+    return n;
 }
 
 void GraphHookSession::finish_token(uint32_t sampled, const uint32_t* topk, uint32_t k,
@@ -132,6 +143,12 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
     }
 
     if (site == GraphHookSite::FfnGate && layer >= 0) {
+        if (static_cast<uint32_t>(layer) < kNLayers) {
+            ffn_seen_mask_ |= (uint64_t{1} << static_cast<uint32_t>(layer));
+        }
+        if (!t.on_device) {
+            ++host_ffn_binds_;
+        }
         const uint32_t n = t.ne0 < kFfnIntermediate ? t.ne0 : kFfnIntermediate;
         if (t.on_device) {
             pending_gate_device_ = true;
@@ -155,6 +172,12 @@ bool GraphHookSession::on_tensor(const GraphTensorView& t, bool ask) {
     }
 
     if (site == GraphHookSite::FfnUp && layer >= 0) {
+        if (static_cast<uint32_t>(layer) < kNLayers) {
+            ffn_seen_mask_ |= (uint64_t{1} << static_cast<uint32_t>(layer));
+        }
+        if (!t.on_device) {
+            ++host_ffn_binds_;
+        }
         ++ffn_up_hits_;
         const uint32_t ntok = t.ne1 == 0 ? 1u : t.ne1;
         for (uint32_t col = 0; col < ntok; ++col) {

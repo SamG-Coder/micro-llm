@@ -113,19 +113,34 @@ Zeros still sit in VRAM if you load a full GGUF and mask. Do not do that.
 
 ## Hybrid CUDA hour (pin, don't ngl)
 
-llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). `-ngl 99` parks the file. Neither is the pin.
+llama.cpp `-ngl 16` is the wrong 16 (first 16 layers: 12 DeltaNet + 4 GA). `-ngl 99` parks the file. Neither is the pin. `n_gpu_layers = 0`. Tensor buffer overrides place tensors.
 
-The pin is tensor buffer overrides, not ngl. `n_gpu_layers = 0`. `-ngl 99` parks the file; `-ngl 16` is the wrong 16 layers. Gated Attention QKVO on layers 3,7,...,63 plus KV stay CUDA. DeltaNet stays on the host. MTP stays off (`load_mtp` / `keep_mtp` false). A GGUF with `block_count=65` and `nextn_predict_layers=1` is the same 64-layer hybrid plus an extra MTP block — do not count that block in the hook ring or the card stack.
+**Measured host hour (5080, Qwen 27B UD-Q4_K_M):** decode stayed **~3.5 tok/s** after parking 41 FFN (CUDA0 grew 2.0 → 6.7 GiB). Streamed FFN 30-63 stayed host ggml. That is the diagnosis, not a guess:
 
-Park as many FFN layers as fit under 14GB: GA+KV (~6.9) + 0.9 CUDA + parked FFN + one stream slot. 15.2 is still hard. Never park all 64. Stream the unparked FFN one layer at a time (host ping-pong two scratch buffers). `op_offload` does **not** move FFN compute — 30328 proved that (`CUDA0 model buffer` stayed ~2GB while `CPU_Mapped` held the FFN pile). Parked FFN **weights** go on CUDA via overrides so those matmuls actually run on the card.
+| Setup | Wall / token | tok/s |
+| --- | --- | --- |
+| All FFN + DeltaNet host ggml (ngl=99 + CPU ov) | ~289 ms | **3.5** |
+| 41 FFN VRAM, 23 FFN + 48 DeltaNet still host | ~280 ms | **~3.5** (observed) |
+| All FFN CUDA, DeltaNet still host | ~186 ms | **5.4** — 20 tok/s impossible |
+| GA+DeltaNet+parked FFN CUDA, streamed FFN CUDA_Host | see plan | **20+ on PCIe 5 if stream set is small** |
 
-Flash-attn stays off (FA + CPU split AVed). `n_batch=512`, `n_ubatch=32`.
+48 host DeltaNet layers at 3.2 ms is a 154 ms floor. **DeltaNet must be CUDA.** Host DeltaNet is the proof that 20 tok/s is impossible.
 
-When the FFN is on the card, tap `|SiLU(gate)*up|` there (`on_ffn_activations_device` / `persistent_cuda_reduce`), then evict the stream slot. Do not dequant the layer to host just to score it. Same HTR1 bits / fire eps.
+Pin on the card: 16 GA QKVO + all 48 DeltaNet weights + as many FFN as fit under 14 GiB (soft) / 15.2 GiB (hard) + KV reserved to **20k tokens** + 0.9 scratch + one stream slot. Never all 64 FFN. If nvidia + KV would break 14, cut park, not KV. Embed is CUDA_Host. `lm_head` only at logits. MTP off (`load_mtp` / `keep_mtp` false). `block_count=65` / `nextn_predict_layers=1` is the extra MTP block — hook ring stays 64. Host GGUF gate accepts 64 or 65.
 
-The exe must prove FFN ran on CUDA: `ffn_cuda_park` / `ffn_cuda_bind` lines and a `tokens/s=` line. The hotspot shows tok/s. Direction paint is heading = hottest layer up the 64-layer tower, color = pack vs FFN, length = bits fired. Zero bits, no streak. No NSEW.
+`PERFORMANCE missing_hooks=` is the **run** count of FFN layers whose hook never ran. A streamed FFN with `n_fired=0` is a missing hook, not a prune — keep all 17408. 5080 swap: `tok/s>3.5 AND host_ffn_binds=0 AND missing_hooks=0`.
 
-Live card stack is pinned GA + parked FFN + ~0.9 CUDA + one stream slot + KV. Not the labeled 10.8 sample, not the host file size, not 64 parked FFNs. Mid-hour checkpoint is the ~18MB MLPT scores file. Do not pack it.
+Unparked FFN live in **CUDA_Host** (pinned, GPU-readable), not CPU ggml. Prefetch layer N+1 while N runs. Host pages pinned.
+
+Flash-attn is **on** when FFN+DeltaNet compute is CUDA. FA + CPU FFN AVed — `--no-flash-attn` if a llama.cpp build still dies. `op_offload` stays off (30328). `n_batch=512`, `n_ubatch=32`.
+
+Hooks: live device pointers, private CUDA stream, **one sync per token** (not 64). Fired bitset + session `n_fired`/`sumsq`/`maxabs` stay the prune evidence. No D2H of the full F32 activation as a host pointer (prior 0xC0000005).
+
+UI: lock-free HTR1 ring, 30-60 Hz drain. No mutex / JSON / WebView / file in the token path.
+
+Live card stack is pinned GA + DeltaNet + parked FFN + ~0.9 CUDA + one stream slot + KV. Not the labeled 10.8 sample, not the host file size, not 64 parked FFNs. Mid-hour checkpoint is the ~18MB MLPT scores file. Do not pack it.
+
+End-of-run stderr prints `ffn_cuda_park` / `ffn_cuda_bind` / `tokens/s=` plus the telemetry block (decode tok/s, token latency, H2D/D2H per token, VRAM breakdown, model vs measured, top bottlenecks). Recipe and before/after: [docs/TRACE_PERF.md](TRACE_PERF.md).
 
 ## Export
 

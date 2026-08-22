@@ -78,6 +78,11 @@ public:
     bool layer_is_unwired(uint32_t layer) const;
     // Dead = hooked AND every channel n_fired == 0. Distinct from unwired.
     bool layer_is_dead(uint32_t layer) const;
+    // RUN count of FFN layers whose hook never ran. Streamed FFN with
+    // n_fired=0 because the hook never ran is a missing hook, not a prune —
+    // Export keeps all 17408 channels on those layers.
+    uint32_t count_missing_hooks() const;
+    bool layer_keep_full_width(uint32_t layer) const { return layer_is_unwired(layer); }
 
     uint64_t layer_hooked() const { return layer_hooked_; }
     void set_layer_hooked_bits(uint64_t bits) { layer_hooked_ = bits; }

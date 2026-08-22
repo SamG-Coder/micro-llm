@@ -36,7 +36,10 @@ void test_gguf_serve_gate(TestContext& ctx) {
     CHECK(ctx, gguf_looks_like_qwen27b_hybrid(mtp));
     CHECK(ctx, gguf_hook_layer_count(mtp) == kNLayers);
     CHECK(ctx, hook_layer_count_from_blocks(mtp.n_layers) == kNLayers);
+    CHECK(ctx, file_exists(mtp_path));
+    CHECK(ctx, !file_exists("this_gguf_does_not_exist_15gib.gguf"));
     std::remove(mtp_path.c_str());
+    CHECK(ctx, !file_exists(mtp_path));
     CHECK(ctx, meta.serve_ok_present);
     CHECK(ctx, meta.serve_ok);
 

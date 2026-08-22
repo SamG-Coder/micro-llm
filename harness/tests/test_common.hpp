@@ -38,3 +38,5 @@ void test_hotspot_ui_files(TestContext& ctx);
 void test_hook_ring_encode(TestContext& ctx);
 void test_hour_cli_resolve(TestContext& ctx);
 void test_ffn_stream_budget(TestContext& ctx);
+void test_residency_plan(TestContext& ctx);
+void test_async_htr1_ring(TestContext& ctx);

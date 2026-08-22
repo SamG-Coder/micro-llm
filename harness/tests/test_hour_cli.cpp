@@ -43,7 +43,7 @@ void test_hour_cli_resolve(TestContext& ctx) {
     }
     CHECK(ctx, has_ga);
     CHECK(ctx, gpu_has_ffn);  // parked FFN on CUDA, not ngl=99 of the whole file
-    CHECK(ctx, !gpu_has_qkv);
+    CHECK(ctx, gpu_has_qkv);  // DeltaNet on CUDA — proven required for 20 tok/s
     const auto gpu_park = hybrid_gpu_tensor_regexes(hybrid_ffn_park_layers());
     bool gpu_parks_ffn = false;
     for (const auto& p : gpu_park) {
@@ -52,7 +52,13 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, gpu_parks_ffn);
     CHECK(ctx, hybrid_ffn_park_layers() > 0);
     CHECK(ctx, hybrid_ffn_park_layers() < kNLayers);
-    CHECK(ctx, hour_park_stream_fits(hybrid_ffn_park_layers()));
+    {
+        const ResidencyPlan park_plan =
+            plan_residency(default_qwen27b_q4km_catalog(), kDefaultServeCtx);
+        CHECK(ctx, park_plan.n_parked_ffn == hybrid_ffn_park_layers());
+        CHECK(ctx, park_plan.card_stack_bytes <= kHourCardSoftBytes);
+        CHECK(ctx, park_plan.kv_reserve_tokens == kHourKvReserveTokens);
+    }
     CHECK(ctx, !hour_park_stream_fits(kNLayers));
     CHECK(ctx, pinned_ga_weight_bytes() > 0);
     CHECK(ctx, pinned_ga_weight_bytes() < kGiB);  // card stack, not 15.3GB host GGUF
@@ -88,7 +94,7 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, a2.cfg.n_ubatch == 32);
     CHECK(ctx, a2.cfg.checkpoint_every == 2000);
     CHECK(ctx, a2.cfg.continue_after_eos);
-    CHECK(ctx, a2.cfg.disable_flash_attn);
+    CHECK(ctx, !a2.cfg.disable_flash_attn);  // FA on when FFN+DeltaNet are CUDA
     CHECK(ctx, a2.cfg.disable_op_offload);
     CHECK(ctx, !a2.cfg.load_mtp);
     CHECK(ctx, !a2.cfg.pack_checkpoint);
@@ -97,6 +103,10 @@ void test_hour_cli_resolve(TestContext& ctx) {
     CHECK(ctx, format_tokens_per_sec_line(1.5, 8, 5.3).find("tokens/s=") == 0);
     CHECK(ctx, format_ffn_cuda_bind_line(3, true).find("ffn_cuda_bind") == 0);
     CHECK(ctx, format_ffn_cuda_park_line(8, 1000).find("ffn_cuda_park") == 0);
+    CHECK(ctx, swap_gate_ok(3.51, 0, 0));
+    CHECK(ctx, !swap_gate_ok(3.5, 0, 0));
+    CHECK(ctx, !swap_gate_ok(4.0, 1, 0));
+    CHECK(ctx, !swap_gate_ok(4.0, 0, 1));
 
     char* both[] = {const_cast<char*>("micro-llm-trace"), ui, model, path, nullptr};
     const TraceCliArgs a3 = parse_trace_cli(4, both);
