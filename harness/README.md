@@ -86,9 +86,9 @@ That path does **not** load a GGUF and does **not** start the hour.
 `--n-predict` is unchanged (default 64) and only applies to `--model`.
 
 Windows (MSVC) hosts `ui/` in WebView2 (`WebView2Loader.dll` is copied next
-to the exe). The page is a 3D volume: tokens fly through the tower, spine
-sparks then heat, packs pulse, FFN bins flash from fired bits on kept
-channels only.
+to the exe). The page is a dark star field: quiet token streaks, dim spine
+(never off), packs tick from spike bits, FFN bins flash from fired bits on
+kept channels only. No bloom pass.
 
 **Evergreen WebView2 runtime** is required. Windows 11 and any machine with
 current Microsoft Edge usually already have it. If the window fails to

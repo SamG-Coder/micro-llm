@@ -4,7 +4,7 @@ Sample-only hotspot map. No live attach. No PID. No hour.mlpt. No `C:\models`.
 
 Paints [docs/HOOK_RING.md](../docs/HOOK_RING.md). 64-layer 3+1 hybrid (16 groups of 3 DeltaNet packs + 1 Gated Attention). Packs are global 0..47, `layer = 4*group+slot`. Not 17408 cubes.
 
-The map is a **3D volume**, not a flat HUD strip. Outgoing words/ids fly through the tower. Spine sparks then heat. Packs pulse. FFN bins flash from this-token fired bits on kept channels. Bloom only hits those bright bits; a zero bit stays dark.
+The map is a **dark 3D volume** — star field, not a nightclub. Outgoing words/ids are quiet streaks through the tower. Spine stays dim (spark then heat, never off). Packs tick from spike bits only. FFN bins flash from this-token fired bits on kept channels. A zero bit stays dark. No bloom pass.
 
 Replay is a generated HTR1 ring (depth ≤ 64). C++ will write this layout later. This package only consumes it.
 
@@ -32,7 +32,7 @@ From each hook-ring record, and only from those bits:
 
 - FFN heat-strip bins that have a fired bit this token on a kept channel (flash, then fade). A zero bit does not flash. A dropped channel is not present. A quiet layer this token is not-this-token, not unwired.
 - Pack nodes whose `pack_spike` bit is set, if the pack is kept. Dropped packs (sample: 10, 22, 33) are not present. Pulse from the spike mask only.
-- Vocab ring on `sampled_id` and top-k. Rarer ids brighter. Toy vocab decodes a few ids; everything else prints the id. Those words/ids spawn as glyphs in the volume.
+- Vocab ring on `sampled_id` and top-k. Rarer ids a little brighter. Toy vocab decodes a few ids; everything else prints the id. Those words/ids fly as dim streaks, not HUD pop words.
 - Spine (16 Gated Attention blocks) always lit. Each token sparks it, then the spark fades into heat. Spine never goes off. Spine lighting is not from the hook ring.
 
 Unwired / dead / fired / weak / floor are not painted. Those five states need MLPT scores + the hook ring. There is no MLPT in this tree. The keep-mask has no state field.
