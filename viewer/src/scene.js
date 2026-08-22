@@ -75,18 +75,18 @@ export function createMap(container, { presentBins = null, presentPacks = null }
   }
   scene.add(packs);
 
-  const spineGeo = new THREE.IcosahedronGeometry(0.32, 1);
+  const spineGeo = new THREE.IcosahedronGeometry(0.36, 1);
   const spineMat = new THREE.MeshStandardMaterial({
-    color: 0x164e49,
+    color: 0x0d3d39,
     emissive: 0x2ee6d6,
-    emissiveIntensity: 0.7,
-    roughness: 0.25,
-    metalness: 0.2,
+    emissiveIntensity: 1.05,
+    roughness: 0.2,
+    metalness: 0.15,
   });
   const spine = new THREE.InstancedMesh(spineGeo, spineMat, N_SPINE);
   const spineSpark = new Float32Array(N_SPINE);
   const spineHeat = new Float32Array(N_SPINE);
-  spineHeat.fill(0.22);
+  spineHeat.fill(0.4);
   for (let g = 0; g < N_SPINE; g++) {
     const layer = g * 4 + 3;
     dummy.position.set(-0.15, layerY(layer), 0.15);
@@ -159,7 +159,7 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     }
     for (let g = 0; g < N_SPINE; g++) {
       spineSpark[g] = 1;
-      spineHeat[g] = Math.min(0.85, spineHeat[g] + 0.08);
+      spineHeat[g] = Math.min(0.95, spineHeat[g] * 0.92 + 0.18);
     }
     vocabFlash.fill(0);
     vocabRare.fill(0);
@@ -196,21 +196,29 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     packs.instanceColor.needsUpdate = true;
     packs.instanceMatrix.needsUpdate = true;
 
+    let maxSpark = 0;
     for (let g = 0; g < N_SPINE; g++) {
-      spineSpark[g] *= 0.88;
-      const glow = 0.28 + spineHeat[g] * 0.45 + spineSpark[g] * 0.7;
-      tmpColor.setRGB(0.1 + glow * 0.15, 0.55 + glow * 0.4, 0.52 + glow * 0.45);
+      spineSpark[g] *= 0.86;
+      if (spineSpark[g] > maxSpark) maxSpark = spineSpark[g];
+      const heat = Math.max(0.4, spineHeat[g]);
+      const spark = spineSpark[g];
+      tmpColor.setRGB(
+        0.18 + spark * 0.82,
+        0.72 + spark * 0.28 + heat * 0.12,
+        0.7 + spark * 0.3,
+      );
       spine.setColorAt(g, tmpColor);
       const layer = g * 4 + 3;
       dummy.position.set(-0.15, layerY(layer), 0.15);
-      const s = 1 + spineSpark[g] * 0.35;
+      const s = 1.05 + spark * 0.7 + heat * 0.08;
       dummy.scale.set(s, s, s);
       dummy.updateMatrix();
       spine.setMatrixAt(g, dummy.matrix);
     }
     spine.instanceColor.needsUpdate = true;
     spine.instanceMatrix.needsUpdate = true;
-    spineMat.emissiveIntensity = 0.65 + 0.7 * Math.max(...spineSpark);
+    spineMat.emissiveIntensity = 0.9 + maxSpark * 1.4;
+    spineLight.intensity = 1.2 + maxSpark * 2.2;
 
     for (let i = 0; i < FFN_COUNT; i++) {
       ffnFlash[i] *= 0.78;
@@ -227,12 +235,12 @@ export function createMap(container, { presentBins = null, presentPacks = null }
     ffn.instanceColor.needsUpdate = true;
 
     for (let b = 0; b < VOCAB_BINS; b++) {
-      vocabFlash[b] *= 0.8;
+      vocabFlash[b] *= 0.78;
       const f = vocabFlash[b] * (vocabRare[b] || 1);
       if (f < 0.02) {
         tmpColor.setRGB(0.09, 0.08, 0.06);
       } else {
-        tmpColor.setRGB(0.3 + f * 0.7, 0.28 + f * 0.6, 0.12 + f * 0.25);
+        tmpColor.setRGB(0.45 + f * 0.55, 0.38 + f * 0.55, 0.1 + f * 0.2);
       }
       vocab.setColorAt(b, tmpColor);
     }

@@ -33,7 +33,7 @@ body {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px 24px;
-  padding: 10px 14px 8px;
+  padding: 12px 16px 10px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -45,12 +45,45 @@ body {
   color: var(--ink);
 }
 
+#tokens {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+#now-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 1.6em;
+}
+
+#now {
+  font-size: 26px;
+  color: #7ff6ec;
+  white-space: pre;
+}
+
+#now.tick,
+#tokens.tick {
+  animation: token-pop 160ms ease-out;
+}
+
 #out {
   grid-column: 1 / -1;
-  min-height: 2.6em;
+  min-height: 3.2em;
+  max-height: 5.2em;
+  overflow: hidden;
   color: #e8eef7;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+@keyframes token-pop {
+  from { color: #fff; filter: brightness(1.8); }
+  to { color: inherit; filter: none; }
 }
 
 #stage {

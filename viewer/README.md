@@ -16,7 +16,7 @@ npm install
 npm start
 ```
 
-Opens a page that replays the sample ring: FFN flashes, fade, spine stays lit, packs pulse, vocab sparks, token count climbs, words/ids come out. The 15.2 bar sits under the map and barely moves.
+Opens a page that replays the sample ring: outgoing word/id every step, token count climbing, FFN flashes, spine spark then heat (never off), packs pulse, vocab sparks. The 15.2 bar sits under the map and barely moves.
 
 ```bash
 npm test
@@ -35,7 +35,7 @@ Unwired / dead / fired / weak / floor are not painted. Those five states need ML
 
 ## 15.2 bar
 
-Under the map. The only memory truth: remnant weights + 0.9 CUDA + KV as ctx grows. Labeled example only — not a measured remnant: 10.8 + 0.9 + 0.5 = 12.2 under 15.2. `serve_ok`, no vision, ctx 8192 + token. Green. Yellow inside 0.5GB of the cap. Red if `serve_ok` is false or vision is on. Heat is session energy, not gigabytes. The bar barely moves on purpose. Do not treat 10.8 as a real remnant.
+Under the map. Labeled example only — not a measured remnant, not live VRAM, not a serve budget: 10.8 + 0.9 + 0.5 = 12.2 under 15.2. `serve_ok`, no vision, ctx 8192 + token. Green. The bar barely moves on purpose. Do not treat 10.8 as a real remnant.
 
 ## What it does not
 

@@ -12,12 +12,13 @@ import {
 import { createMap } from "./scene.js";
 import { decodeId } from "./vocab.js";
 
-const TOKEN_MS = 220;
+const TOKEN_MS = 160;
 
 const hud = {
   tokens: document.getElementById("tokens"),
   layer: document.getElementById("layer"),
   out: document.getElementById("out"),
+  now: document.getElementById("now"),
   flags: document.getElementById("flags"),
 };
 const fill = document.getElementById("budget-fill");
@@ -33,6 +34,7 @@ const map = createMap(document.getElementById("stage"), {
 
 const spoken = [];
 let cursor = 0;
+let played = 0;
 
 function paintBudget(tokenIndex) {
   const b = sampleBudgetAtToken(tokenIndex);
@@ -52,9 +54,16 @@ function step() {
 
   const word = decodeId(rec.sampledId);
   spoken.push(word);
-  if (spoken.length > 96) spoken.shift();
+  if (spoken.length > 120) spoken.shift();
+  played += 1;
   hud.out.textContent = spoken.join("");
-  hud.tokens.textContent = String(rec.tokenIndex + 1);
+  hud.now.textContent = word === "\n" ? "\\n" : word === " " ? "␣" : word;
+  hud.tokens.textContent = String(played);
+  hud.now.classList.remove("tick");
+  hud.tokens.classList.remove("tick");
+  void hud.now.offsetWidth;
+  hud.now.classList.add("tick");
+  hud.tokens.classList.add("tick");
   const layer = hottestLayerThisToken(rec.ffnFired, keepMask);
   hud.layer.textContent = layer === null ? "—" : `L${layer}`;
   const special = (rec.flags & FLAG_SPECIAL_OR_HIGH_LOSS) !== 0;
